@@ -1,0 +1,25 @@
+<?xml version="1.0" encoding="utf-8"?>
+<manifest xmlns:android="http://schemas.android.com/apk/res/android">
+
+    <!-- API 24 to 30: a BLE scan needs these install-time grants. From API 31 the dashboard-owned
+         BLUETOOTH_SCAN, BLUETOOTH_CONNECT and BLUETOOTH_ADVERTISE replace them, so both end at
+         maxSdkVersion 30. Location stays dashboard-owned (android.requires.permissions): this module
+         adds no dashboard-owned permission and changes none of the app's own declarations. -->
+    <uses-permission
+        android:name="android.permission.BLUETOOTH"
+        android:maxSdkVersion="30" />
+    <uses-permission
+        android:name="android.permission.BLUETOOTH_ADMIN"
+        android:maxSdkVersion="30" />
+    <!-- keep_alive: BleLinkService runs as a connectedDevice foreground service (API 34 needs the
+         typed permission and the matching foregroundServiceType). -->
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE_CONNECTED_DEVICE" />
+
+    <application>
+        <service
+            android:name="despia.ext.ble.BleLinkService"
+            android:exported="false"
+            android:foregroundServiceType="connectedDevice" />
+    </application>
+</manifest>

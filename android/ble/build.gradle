@@ -1,0 +1,22 @@
+// Engineer-owned module build. It runs only in the offline, credential-free NX compile job. Its
+// dependencies are the base app's own coordinates (the base app's own app/build.gradle), so the offline
+// build resolves them without lock pins.
+apply plugin: 'com.android.library'
+
+android {
+    namespace 'despia.ext.ble'
+    compileSdk 36
+    defaultConfig {
+        minSdk 24
+    }
+    compileOptions {
+        sourceCompatibility JavaVersion.VERSION_17
+        targetCompatibility JavaVersion.VERSION_17
+    }
+}
+
+dependencies {
+    implementation project(':nativeext-api')
+    implementation 'androidx.core:core:1.18.0'
+    implementation 'androidx.activity:activity:1.13.0'
+}

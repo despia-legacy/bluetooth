@@ -1,0 +1,7 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- The BLE fixture's keep-alive notification (BleLinkService). An app may override these names. -->
+<resources>
+    <string name="nx_ble_channel_name">Bluetooth connections</string>
+    <string name="nx_ble_link_title">Bluetooth</string>
+    <string name="nx_ble_link_text">Keeping Bluetooth devices connected</string>
+</resources>
