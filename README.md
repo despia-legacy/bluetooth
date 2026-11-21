@@ -159,7 +159,19 @@ const scan = scanReply.bleScanStart;
 if (scan === undefined) throw new Error('No native reply within 30 seconds');
 if (!scan.ok) throw new Error(scan.code + ': ' + scan.error);
 
-// Read devices after scan results arrive.
+// scan_start acknowledges the start. Wait for the native scan to finish.
+const scanDeadline = Date.now() + 15000;
+let scanning = true;
+while (scanning && Date.now() < scanDeadline) {
+  await new Promise(resolve => setTimeout(resolve, 500));
+  const progressReply = await despia('extension://ble/state', ['bleState']);
+  const progress = progressReply.bleState;
+  if (progress === undefined) throw new Error('No native reply within 30 seconds');
+  if (!progress.ok) throw new Error(progress.code + ': ' + progress.error);
+  scanning = progress.data.scanning;
+}
+if (scanning) throw new Error('The native scan has not finished yet');
+
 const foundReply = await despia('extension://ble/devices', ['bleDevices']);
 const found = foundReply.bleDevices;
 if (found === undefined) throw new Error('No native reply within 30 seconds');
