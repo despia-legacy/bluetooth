@@ -87,7 +87,7 @@ Bytes cross the bridge as lower-case `hex` (or `b64` in parameters). No native o
 
 Despia takes app identity from the existing build configuration. `public/` is the folder your site serves from its root (in SvelteKit, write `static/`). The paths must stay as written, because the manifest names them. Signed build verification checks the exact files included in the native build.
 
-In Despia, turn on the Bluetooth purpose string (`NSBluetoothAlwaysUsageDescription`) and write the sentence your users see in the permission prompt (iOS), and turn on nearby devices, which grants `BLUETOOTH_SCAN`, `BLUETOOTH_CONNECT` and `BLUETOOTH_ADVERTISE` on Android 12 and later (Android). The Bluetooth background modes come from the manifest. The Android module declares the two AndroidX dependencies listed below. The app's dependency build verification must include their resolved versions.
+Supply `NSBluetoothAlwaysUsageDescription` with text explaining your app's Bluetooth use. Use the app's existing purpose-description configuration, or, with the upcoming runtime, add a nonempty string under `ios.app.info_plist` and set `ios.app.custom_keys` to `true`. Existing nonempty app-configured text takes priority. Ensure the final Android manifest declares the permissions required below. These declarations do not grant runtime access: the user decides when Android presents the permission request. The Bluetooth background modes come from the manifest. The Android module declares the two AndroidX dependencies listed below. The app's dependency build verification must include their resolved versions.
 
 ---
 
@@ -95,13 +95,13 @@ In Despia, turn on the Bluetooth purpose string (`NSBluetoothAlwaysUsageDescript
 
 ### iOS
 
-- **Bluetooth.** `NSBluetoothAlwaysUsageDescription`, declared under `requires.usage_descriptions`. Set the purpose text in Despia. Call `state` with `prompt=true` to show the system prompt. Without `prompt`, `state` never shows it.
+- **Bluetooth.** `NSBluetoothAlwaysUsageDescription`, declared under `requires.usage_descriptions`. Supply its purpose text as described above. Call `state` with `prompt=true` to show the system prompt. Without `prompt`, `state` never shows it.
 - **Background modes.** `bluetooth-central` and `bluetooth-peripheral`.
 - **State restoration.** The `bluetooth_restoration` lifecycle hook and the central restore identifier `main`. When iOS relaunches the app for Bluetooth, kept links come back and the `restored` event fires.
 
 ### Android
 
-- **Nearby devices and location.** `BLUETOOTH_SCAN`, `BLUETOOTH_CONNECT`, `BLUETOOTH_ADVERTISE` and `ACCESS_FINE_LOCATION`, declared under `requires.permissions`. Turn these permissions on for your app in Despia. The extension asks for the ones a route needs at runtime, one request at a time. On Android 12 (API 31) and later a scan needs `BLUETOOTH_SCAN`, a link needs `BLUETOOTH_CONNECT`, and advertising needs `BLUETOOTH_ADVERTISE`. On Android 7 to 11 (API 24 to 30) a scan needs `ACCESS_FINE_LOCATION`.
+- **Nearby devices and location.** `BLUETOOTH_SCAN`, `BLUETOOTH_CONNECT`, `BLUETOOTH_ADVERTISE` and `ACCESS_FINE_LOCATION`, required under `requires.permissions`. They must be declared in the final Android manifest. A declaration does not grant runtime consent. The extension requests the permissions a route needs, one request at a time, and handles the user's decision. On Android 12 (API 31) and later a scan needs `BLUETOOTH_SCAN` and also `ACCESS_FINE_LOCATION` unless the app declares `neverForLocation`; a link needs `BLUETOOTH_CONNECT`; advertising needs `BLUETOOTH_ADVERTISE` and `BLUETOOTH_CONNECT`. On Android 7 to 11 (API 24 to 30) a scan needs `ACCESS_FINE_LOCATION`.
 - **Legacy grants.** The module's `AndroidManifest.xml` adds `BLUETOOTH` and `BLUETOOTH_ADMIN` up to API 30.
 - **Keep-alive.** `FOREGROUND_SERVICE` and `FOREGROUND_SERVICE_CONNECTED_DEVICE`, for the `connectedDevice` foreground service that keeps links alive while the app is in the background. It starts only from `keep_alive`, while the app is visible.
 - **Libraries.** `androidx.core:core:1.18.0` and `androidx.activity:activity:1.13.0`.
