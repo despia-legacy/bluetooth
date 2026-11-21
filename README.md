@@ -26,7 +26,7 @@ Use the Despia SDK with React, Vue, Svelte, Next.js, TanStack or HTML5. Projects
 - A Despia V3 app and a web app that serves static files from its own HTTPS origin.
 - The `despia-native` JavaScript SDK (`npm install despia-native`).
 - A physical device. Bluetooth does not run in the iOS simulator.
-- The two AndroidX libraries named below must be the versions your app's base build already resolves.
+- Android dependencies `androidx.core:core:1.18.0` and `androidx.activity:activity:1.13.0`, declared by the extension module. The native build must resolve and verify the app's dependency graph before compilation.
 
 ## Install
 
@@ -87,7 +87,7 @@ Bytes cross the bridge as lower-case `hex` (or `b64` in parameters). No native o
 
 Despia takes app identity from the existing build configuration. `public/` is the folder your site serves from its root (in SvelteKit, write `static/`). The paths must stay as written, because the manifest names them. Signed build verification checks the exact files included in the native build.
 
-In Despia, turn on the Bluetooth purpose string (`NSBluetoothAlwaysUsageDescription`) and write the sentence your users see in the permission prompt (iOS), and turn on nearby devices, which grants `BLUETOOTH_SCAN`, `BLUETOOTH_CONNECT` and `BLUETOOTH_ADVERTISE` on Android 12 and later (Android). The Bluetooth background modes come from the manifest. The two AndroidX libraries must be the versions your app's base build already resolves. The build refuses others.
+In Despia, turn on the Bluetooth purpose string (`NSBluetoothAlwaysUsageDescription`) and write the sentence your users see in the permission prompt (iOS), and turn on nearby devices, which grants `BLUETOOTH_SCAN`, `BLUETOOTH_CONNECT` and `BLUETOOTH_ADVERTISE` on Android 12 and later (Android). The Bluetooth background modes come from the manifest. The Android module declares the two AndroidX dependencies listed below. The app's dependency build verification must include their resolved versions.
 
 ---
 
