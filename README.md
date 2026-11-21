@@ -115,12 +115,38 @@ Every route answers once in its own variable and callback, `ble<Route>` and `onB
 ```javascript
 import despia from 'despia-native';
 
-globalThis.onBleDevice = event => {
-  event.devices.forEach(device => console.log(device.id, device.name, device.rssi));
+const previousBleDevice = globalThis.onBleDevice;
+const handleBleDevice = event => {
+  try {
+    if (typeof previousBleDevice === 'function') previousBleDevice(event);
+  } finally {
+    event.devices.forEach(device => console.log(device.id, device.name, device.rssi));
+  }
 };
-globalThis.onBleValue = event => {
-  event.records.forEach(record => console.log(record.char, record.hex));
+globalThis.onBleDevice = handleBleDevice;
+const cleanupBleDevice = () => {
+  if (globalThis.onBleDevice !== handleBleDevice) return;
+  if (previousBleDevice === undefined) delete globalThis.onBleDevice;
+  else globalThis.onBleDevice = previousBleDevice;
 };
+// Call cleanupBleDevice() when this component unmounts.
+
+const previousBleValue = globalThis.onBleValue;
+const handleBleValue = event => {
+  try {
+    if (typeof previousBleValue === 'function') previousBleValue(event);
+  } finally {
+    event.records.forEach(record => console.log(record.char, record.hex));
+  }
+};
+globalThis.onBleValue = handleBleValue;
+const cleanupBleValue = () => {
+  if (globalThis.onBleValue !== handleBleValue) return;
+  if (previousBleValue === undefined) delete globalThis.onBleValue;
+  else globalThis.onBleValue = previousBleValue;
+};
+// Call cleanupBleValue() when this component unmounts.
+
 
 const radioReply = await despia(`extension://ble/state?prompt=${encodeURIComponent(true)}`, ['bleState']);
 const radio = radioReply.bleState;
@@ -154,7 +180,22 @@ import despia from 'despia-native';
 const SERVICE = '0000fff0-0000-1000-8000-00805f9b34fb';
 const STATUS = '0000fff1-0000-1000-8000-00805f9b34fb';
 const COMMAND = '0000fff2-0000-1000-8000-00805f9b34fb';
-globalThis.onBleRequest = event => console.log(event.records);
+const previousBleRequest = globalThis.onBleRequest;
+const handleBleRequest = event => {
+  try {
+    if (typeof previousBleRequest === 'function') previousBleRequest(event);
+  } finally {
+    console.log(event.records)
+  }
+};
+globalThis.onBleRequest = handleBleRequest;
+const cleanupBleRequest = () => {
+  if (globalThis.onBleRequest !== handleBleRequest) return;
+  if (previousBleRequest === undefined) delete globalThis.onBleRequest;
+  else globalThis.onBleRequest = previousBleRequest;
+};
+// Call cleanupBleRequest() when this component unmounts.
+
 
 const radioReply = await despia(`extension://ble/state?prompt=${encodeURIComponent(true)}`, ['bleState']);
 const radio = radioReply.bleState;
