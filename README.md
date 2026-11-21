@@ -43,19 +43,23 @@ Install the SDK in your web app:
 npm install despia-native
 ```
 
-Copy `example/src/lib/despia-extension.js` to your app's `src/lib/` and adjust the import path if needed. It imports `despia` from `despia-native`, calls the SDK and returns the native answer's `data`. It checks native error envelopes and throws an error with their `code`. The SDK itself resolves native `ok: false` envelopes; it does not reject them. A single watched value becomes `undefined` after 30 seconds, which this helper reports as `sdk_timeout`.
+Call the published SDK directly and watch the exact answer variable declared in `manifest.json`. The SDK resolves to an object keyed by that variable; the native envelope is inside it. Check both a missing reply and `ok: false` before using `data`. Native errors resolve through the SDK; they do not reject its promise. A single watched variable becomes `undefined` after 30 seconds without a reply.
 
-Each helper call forwards a unique native callback into a separate watched value, so overlapping calls do not share response globals. `onExtensionEvent` registers the declared native event callbacks and returns a cleanup function. Events are callbacks, not values you can poll from the SDK proxy.
+Await calls that use the same answer variable sequentially. The SDK's command queue does not correlate concurrent responses. Encode every query value with `encodeURIComponent`, including JSON text. Spaces become `%20`; a literal plus becomes `%2B`. Do not use unmodified `URLSearchParams` form encoding, which uses plus for spaces.
 
-Importing the SDK is safe during server rendering. Run calls and event subscriptions only from browser click handlers or mounted client hooks. React and Vue can use the browser APIs used by this helper; in Next.js and other server-rendered apps, keep these calls in client code. The extension must be included in the installed Despia V3 app; a browser preview has no native extension features.
+Importing the SDK is safe during server rendering. Run native calls only in browser click handlers or mounted client hooks, including client components in Next.js. The extension must be included in the installed Despia V3 app; a browser preview has no native extension features. Optional event handlers use the declared callback on `globalThis`, not an SDK subscription API. Save and restore any callback your app already owns when a component mounts and unmounts.
 
 ## Calling it
 
 ```javascript
-import { extensionCall } from './lib/despia-extension.js';
+import despia from 'despia-native';
 
-const answer = await extensionCall('ble', 'state');
-console.log(answer);
+const answerReply = await despia('extension://ble/state', ['bleState']);
+const answer = answerReply.bleState;
+if (answer === undefined) throw new Error('No native reply within 30 seconds');
+if (!answer.ok) throw new Error(answer.code + ': ' + answer.error);
+
+console.log(answer.data);
 ```
 
 Calls use `extension://ble/<route>?<params>`. Each route answers once, in the page that made the call: the runtime sets the route's answer variable in the page, then calls the route's callback. Only declared parameters are accepted. Keep large data on the native side and pass identifiers through the bridge. A call URL is at most 8192 characters.
@@ -109,53 +113,77 @@ Every route answers once in its own variable and callback, `ble<Route>` and `onB
 ### Central
 
 ```javascript
-import { extensionCall, onExtensionEvent } from './lib/despia-extension.js';
-const ble = (route, params) => extensionCall('ble', route, params);
-const HEART_RATE = '180d';
-const MEASUREMENT = '2a37';
+import despia from 'despia-native';
 
-const stopDevices = onExtensionEvent('onBleDevice', event => {
+globalThis.onBleDevice = event => {
   event.devices.forEach(device => console.log(device.id, device.name, device.rssi));
-});
-const stopValues = onExtensionEvent('onBleValue', event => {
+};
+globalThis.onBleValue = event => {
   event.records.forEach(record => console.log(record.char, record.hex));
-});
-export async function startScan() {
-  const state = await ble('state', { prompt: true });
-  if (state.state !== 'on') throw new Error(state.state);
-  await ble('scan_start', { services: HEART_RATE, seconds: 10 });
-}
-export async function connectDevice(id) {
-  await ble('scan_stop');
-  await ble('connect', { id, auto: true });
-  await ble('discover', { id });
-  await ble('subscribe', { id, service: HEART_RATE, char: MEASUREMENT });
-}
-// Run startScan() from a click, then pass a discovered device's id to connectDevice(id).
-// Read or write only characteristics your device exposes:
-// const battery = await ble('read', { id, service: '180f', char: '2a19' });
-// await ble('write', { id, service: 'fff0', char: 'fff1', hex: '0102' });
-// Later: await ble('disconnect', { id }); stopDevices(); stopValues();
+};
+
+const radioReply = await despia(`extension://ble/state?prompt=${encodeURIComponent(true)}`, ['bleState']);
+const radio = radioReply.bleState;
+if (radio === undefined) throw new Error('No native reply within 30 seconds');
+if (!radio.ok) throw new Error(radio.code + ': ' + radio.error);
+
+if (radio.data.state !== 'on') throw new Error(radio.data.state);
+const scanReply = await despia(`extension://ble/scan_start?services=${encodeURIComponent('180d')}&seconds=${encodeURIComponent(10)}`, ['bleScanStart']);
+const scan = scanReply.bleScanStart;
+if (scan === undefined) throw new Error('No native reply within 30 seconds');
+if (!scan.ok) throw new Error(scan.code + ': ' + scan.error);
+
+// Read devices after scan results arrive.
+const foundReply = await despia('extension://ble/devices', ['bleDevices']);
+const found = foundReply.bleDevices;
+if (found === undefined) throw new Error('No native reply within 30 seconds');
+if (!found.ok) throw new Error(found.code + ': ' + found.error);
+
+console.log(found.data);
+const stoppedReply = await despia('extension://ble/scan_stop', ['bleScanStop']);
+const stopped = stoppedReply.bleScanStop;
+if (stopped === undefined) throw new Error('No native reply within 30 seconds');
+if (!stopped.ok) throw new Error(stopped.code + ': ' + stopped.error);
 ```
 
 ### Peripheral
 
 ```javascript
-import { extensionCall, onExtensionEvent } from './lib/despia-extension.js';
-const ble = (route, params) => extensionCall('ble', route, params);
+import despia from 'despia-native';
+
 const SERVICE = '0000fff0-0000-1000-8000-00805f9b34fb';
 const STATUS = '0000fff1-0000-1000-8000-00805f9b34fb';
 const COMMAND = '0000fff2-0000-1000-8000-00805f9b34fb';
-const stopRequests = onExtensionEvent('onBleRequest', event => {
-  event.records.forEach(record => console.log(record.central, record.char, record.hex));
-});
-await ble('state', { prompt: true });
-await ble('service_add', { uuid: SERVICE, chars: `${STATUS}~rn~00,${COMMAND}~w` });
-await ble('value_set', { service: SERVICE, char: STATUS, hex: '01' });
-const advertising = await ble('advertise_start', { services: SERVICE, name: 'My Device', seconds: 300 });
-console.log(advertising.applied);
-await ble('notify', { service: SERVICE, char: STATUS, hex: '02' });
-// Later: await ble('advertise_stop'); await ble('service_remove'); stopRequests();
+globalThis.onBleRequest = event => console.log(event.records);
+
+const radioReply = await despia(`extension://ble/state?prompt=${encodeURIComponent(true)}`, ['bleState']);
+const radio = radioReply.bleState;
+if (radio === undefined) throw new Error('No native reply within 30 seconds');
+if (!radio.ok) throw new Error(radio.code + ': ' + radio.error);
+
+const serviceReply = await despia(`extension://ble/service_add?uuid=${encodeURIComponent(SERVICE)}&chars=${encodeURIComponent(STATUS + "~rn~00," + COMMAND + "~w")}`, ['bleServiceAdd']);
+const service = serviceReply.bleServiceAdd;
+if (service === undefined) throw new Error('No native reply within 30 seconds');
+if (!service.ok) throw new Error(service.code + ': ' + service.error);
+
+// Wait for native service registration before advertising.
+const servicesReply = await despia('extension://ble/services', ['bleServices']);
+const services = servicesReply.bleServices;
+if (services === undefined) throw new Error('No native reply within 30 seconds');
+if (!services.ok) throw new Error(services.code + ': ' + services.error);
+
+console.log(services.data);
+const storedReply = await despia(`extension://ble/value_set?service=${encodeURIComponent(SERVICE)}&char=${encodeURIComponent(STATUS)}&hex=${encodeURIComponent('01')}`, ['bleValueSet']);
+const stored = storedReply.bleValueSet;
+if (stored === undefined) throw new Error('No native reply within 30 seconds');
+if (!stored.ok) throw new Error(stored.code + ': ' + stored.error);
+
+const advertisingReply = await despia(`extension://ble/advertise_start?services=${encodeURIComponent(SERVICE)}&name=${encodeURIComponent('My Device')}&seconds=${encodeURIComponent(300)}`, ['bleAdvertiseStart']);
+const advertising = advertisingReply.bleAdvertiseStart;
+if (advertising === undefined) throw new Error('No native reply within 30 seconds');
+if (!advertising.ok) throw new Error(advertising.code + ': ' + advertising.error);
+
+console.log(advertising.data.applied);
 ```
 
 ### Missed events
@@ -163,10 +191,16 @@ await ble('notify', { service: SERVICE, char: STATUS, hex: '02' });
 Every event is also kept in a journal of up to 2000 records, each with a `seq`. A page that was not loaded when something happened reads it back:
 
 ```javascript
+import despia from 'despia-native';
+
 let after = 0;
-const journal = await extensionCall('ble', 'events', { after, max: 200 });
-for (const record of journal.records) console.log(record);
-after = journal.next;
+const journalReply = await despia(`extension://ble/events?after=${encodeURIComponent(after)}&max=${encodeURIComponent(200)}`, ['bleEvents']);
+const journal = journalReply.bleEvents;
+if (journal === undefined) throw new Error('No native reply within 30 seconds');
+if (!journal.ok) throw new Error(journal.code + ': ' + journal.error);
+
+for (const record of journal.data.records) console.log(record);
+after = journal.data.next;
 ```
 
 Ask for Bluetooth first: call `state` with `prompt=true` before the first scan, connect or server route, so the system prompt is answered before anything waits on it. A route that waited too long answers `timeout` and started nothing. Call it again. A `connect` to a device that is already connecting (for example one iOS brought back after your app relaunched) joins that attempt and resolves with its result.
