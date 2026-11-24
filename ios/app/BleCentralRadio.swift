@@ -139,12 +139,16 @@ final class BleCentralRadio: NSObject, @MainActor CBCentralManagerDelegate, @Mai
 
     // MARK: scan
 
-    func scanStart(_ scan: Int, _ services: [String], _ duplicates: Bool, _ mode: String) -> String? {
-        // `mode` is Android's ScanSettings scan mode; CoreBluetooth has no scan mode to set.
+    func scanStart(_ scan: Int, _ services: [String], _ duplicates: Bool, _ mode: String, _ options: BleObj) -> String? {
+        // `mode` and the Android ScanSettings options have no CoreBluetooth counterpart (the core's
+        // `applied` says so); solicited service UUIDs are CoreBluetooth's own scan option.
         guard let m = manager, m.state == .poweredOn else { return "unavailable Bluetooth is \(stateName)" }
         let ids = services.map { CBUUID(string: $0) }
-        m.scanForPeripherals(withServices: ids.isEmpty ? nil : ids,
-                             options: [CBCentralManagerScanOptionAllowDuplicatesKey: duplicates])
+        var o: [String: Any] = [CBCentralManagerScanOptionAllowDuplicatesKey: duplicates]
+        if let sol = options["solicited"] as? [Any], !sol.isEmpty {
+            o[CBCentralManagerScanOptionSolicitedServiceUUIDsKey] = sol.compactMap { ($0 as? String).map { CBUUID(string: $0) } }
+        }
+        m.scanForPeripherals(withServices: ids.isEmpty ? nil : ids, options: o)
         scanning = scan
         return nil
     }
@@ -201,8 +205,85 @@ final class BleCentralRadio: NSObject, @MainActor CBCentralManagerDelegate, @Mai
         sessions[id] = Session(gen, p)
         // iOS keeps a pending connection without a time limit; the core's connect timer bounds a
         // requested connect, and an automatic reconnect waits for the device.
-        m.connect(p, options: nil)
+        m.connect(p, options: connectOptions[id])
         return nil
+    }
+
+    /// CBConnectPeripheralOption values the page gave on `connect`, by device; kept for the device's
+    /// reconnects too.
+    var connectOptions: [String: [String: Any]] = [:]
+
+    /// The connect options of a `connect` route call; what each one became is in `applied`.
+    func setConnectOptions(_ id: String, _ p: [String: Any]) -> BleObj {
+        var o: [String: Any] = [:]
+        let applied = BleObj()
+        func put(_ name: String, _ key: String) {
+            guard let v = p[name] as? Bool else { return }
+            o[key] = v
+            applied[name] = true
+        }
+        put("notify_on_connection", CBConnectPeripheralOptionNotifyOnConnectionKey)
+        put("notify_on_disconnection", CBConnectPeripheralOptionNotifyOnDisconnectionKey)
+        put("notify_on_notification", CBConnectPeripheralOptionNotifyOnNotificationKey)
+        put("transport_bridging", CBConnectPeripheralOptionEnableTransportBridgingKey)
+        put("requires_ancs", CBConnectPeripheralOptionRequiresANCS)
+        if let v = p["system_reconnect"] as? Bool {
+            if #available(iOS 17.0, *) {
+                o[CBConnectPeripheralOptionEnableAutoReconnect] = v
+                applied["system_reconnect"] = true
+            } else {
+                applied["system_reconnect"] = false
+            }
+        }
+        if !o.isEmpty { connectOptions[id] = o }
+        return applied
+    }
+
+    /// The key of the first discovered characteristic that takes the write, or nil.
+    func writable(_ id: String, _ gen: Int, _ withResponse: Bool) -> String? {
+        guard let s = sessions[id], s.gen == gen, s.connected else { return nil }
+        let want: CBCharacteristicProperties = withResponse ? .write : .writeWithoutResponse
+        for svc in s.peripheral.services ?? [] {
+            for c in svc.characteristics ?? [] where c.properties.contains(want) {
+                return BleCentralRadio.key(s.peripheral, c)
+            }
+        }
+        return nil
+    }
+
+    /// Peripherals the system holds a connection to, from any app, that offer one of `services`
+    /// (retrieveConnectedPeripherals(withServices:)). They become connectable by id.
+    func systemDevices(_ services: [String]) -> [Any]? {
+        guard let m = manager, m.state == .poweredOn else { return nil }
+        return m.retrieveConnectedPeripherals(withServices: services.map { CBUUID(string: $0) }).map { p in
+            known[p.identifier.uuidString] = p
+            return BleCore.obj(("id", p.identifier.uuidString), ("name", BleCore.nul(p.name)),
+                               ("ancsAuthorized", p.ancsAuthorized)).plain as Any
+        }
+    }
+
+    /// registerForConnectionEvents: a `connection_event` whenever a matching peripheral connects to or
+    /// disconnects from the system, from any app.
+    func connectionEvents(_ services: [String], _ ids: [String]) -> String? {
+        guard let m = manager, m.state == .poweredOn else { return "unavailable Bluetooth is \(stateName)" }
+        var o: [CBConnectionEventMatchingOption: Any] = [:]
+        if !services.isEmpty { o[.serviceUUIDs] = services.map { CBUUID(string: $0) } }
+        let uuids = ids.compactMap { UUID(uuidString: $0) }
+        if uuids.count != ids.count { return "bad_value ids must be peripheral identifiers" }
+        if !uuids.isEmpty { o[.peripheralUUIDs] = uuids }
+        m.registerForConnectionEvents(options: o.isEmpty ? nil : o)
+        return nil
+    }
+
+    func centralManager(_ central: CBCentralManager, connectionEventDidOccur event: CBConnectionEvent, for peripheral: CBPeripheral) {
+        known[peripheral.identifier.uuidString] = peripheral
+        core.external("connection_event", BleCore.obj(("id", peripheral.identifier.uuidString),
+                                                      ("event", event == .peerConnected ? "connected" : "disconnected"),
+                                                      ("name", BleCore.nul(peripheral.name))))
+    }
+
+    func centralManager(_ central: CBCentralManager, didUpdateANCSAuthorizationFor peripheral: CBPeripheral) {
+        core.external("ancs", BleCore.obj(("id", peripheral.identifier.uuidString), ("authorized", peripheral.ancsAuthorized)))
     }
 
     private func session(_ p: CBPeripheral) -> Session? {

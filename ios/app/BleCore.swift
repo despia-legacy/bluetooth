@@ -14,7 +14,9 @@ import Foundation
 /// return value (an error text, or `true` for a close that needs no callback).
 protocol BlePort: AnyObject {
     /// Start a scan. nil when the platform accepted it, else "code message".
-    func scanStart(_ scan: Int, _ services: [String], _ duplicates: Bool, _ mode: String) -> String?
+    /// `options`: the scan options the page gave beyond services, duplicates and mode (keys as in
+    /// `scanOptionKeys`); the radio applies what its platform offers (`scanApplied` says which).
+    func scanStart(_ scan: Int, _ services: [String], _ duplicates: Bool, _ mode: String, _ options: BleObj) -> String?
     func scanStop(_ scan: Int)
     /// Start connection attempt `gen`. `background`: an automatic reconnect.
     func connect(_ id: String, _ gen: Int, _ auto: Bool, _ background: Bool) -> String?
@@ -25,6 +27,9 @@ protocol BlePort: AnyObject {
     /// Hand one GATT step to the platform (kinds as BleCore.java). nil when accepted, else "code message".
     func op(_ id: String, _ gen: Int, _ op: Int, _ kind: String, _ key: String?, _ descriptor: String?,
             _ data: [UInt8]?, _ arg: Int) -> String?
+    /// The key of the first discovered characteristic of link `gen` that takes a write with response
+    /// (`withResponse`) or without one; nil when none (the `raw` route).
+    func writable(_ id: String, _ gen: Int, _ withResponse: Bool) -> String?
     func timer(_ kind: String, _ token: Int, _ ms: Int)
     func reply(_ call: Int, _ ok: Bool, _ code: String?, _ message: String?, _ data: BleObj?)
     func emit(_ event: String, _ data: BleObj)
@@ -121,6 +126,11 @@ final class BleCore {
     private(set) var scan = 0
     private var lastScan = 0
     private var filtered = false
+    /// The scan's own filters, applied here on every platform: advertised names, and a manufacturer id
+    /// with an optional data prefix.
+    private var scanNames: [String] = []
+    private var scanManufacturer = -1
+    private var scanManufacturerPrefix: [UInt8] = []
     private var devices: [String: BleObj] = [:]
     private var deviceOrder: [String] = []
     private var pendingDevices: [Any] = []
@@ -130,6 +140,13 @@ final class BleCore {
     private(set) var dropped = 0
     private var pendingValues: [BleObj] = []
     private var flushScheduled = false
+    /// The disk-durable journal: the last seq handed to the port, records written since the last rewrite.
+    private var persistedSeq = 0
+    private var persistedSinceRewrite = 0
+    /// The journal of the previous app process, read back from disk at launch.
+    private(set) var previousRun: String?
+    private var previousRecords: [BleObj] = []
+    private var previousDropped = 0
 
     final class Link {
         let id: String
@@ -139,6 +156,9 @@ final class BleCore {
         var background = false
         var mtu = 23
         var connectCall = -1
+        /// A page `connect` with `seconds` 0: the attempt waits for the device without a time limit
+        /// (the route answered at once with `connecting`).
+        var unbounded = false
         /// The token of the timer bounding an attempt no fresh connect started (restored or adopted).
         var pendingTimer = 0
         var closed = false
@@ -172,6 +192,8 @@ final class BleCore {
         var arg = 0
         var chunk = 0, chunks = 0
         var `internal` = false
+        /// The `raw` route: the reply names the characteristic the radio chose.
+        var raw = false
 
         init(_ call: Int, _ kind: String) {
             self.call = call
@@ -329,10 +351,37 @@ final class BleCore {
         return id.utf8.count == 36 && uuid(id) != nil
     }
 
-    /// Exactly one of hex and b64 decoded; nil when none, both, or malformed.
-    static func bytes(_ hex: String?, _ b64: String?) -> [UInt8]? {
-        if (hex == nil) == (b64 == nil) { return nil }
+    /// Exactly one of hex, b64 and text (UTF-8) decoded; nil when none, more than one, or malformed.
+    static func bytes(_ hex: String?, _ b64: String?, _ text: String? = nil) -> [UInt8]? {
+        let given = (hex != nil ? 1 : 0) + (b64 != nil ? 1 : 0) + (text != nil ? 1 : 0)
+        if given != 1 { return nil }
+        if let t = text { return Array(t.utf8) }
         return hex != nil ? fromHex(hex) : fromB64(b64)
+    }
+
+    /// Comma-separated names (each 1 to 248 UTF-8 bytes, the GAP name limit), at most 10; empty
+    /// when missing; nil when malformed.
+    static func nameList(_ s: String?) -> [String]? {
+        var out: [String] = []
+        guard let s = s, !s.isEmpty else { return out }
+        for part in s.split(separator: ",", omittingEmptySubsequences: false) {
+            let n = String(part)
+            if n.isEmpty || n.utf8.count > 248 { return nil }
+            if !out.contains(n) { out.append(n) }
+        }
+        return out.count > 10 ? nil : out
+    }
+
+    /// PHY names of the `phy` route (`1m`, `2m`, `coded`), comma-separated; nil when malformed or empty.
+    static func phyList(_ s: String?) -> [String]? {
+        guard let s = s, !s.isEmpty else { return nil }
+        var out: [String] = []
+        for part in s.split(separator: ",", omittingEmptySubsequences: false) {
+            let p = String(part)
+            if !["1m", "2m", "coded"].contains(p) { return nil }
+            if !out.contains(p) { out.append(p) }
+        }
+        return out
     }
 
     /// The characteristic key used in replies, records and subscriptions.
@@ -495,6 +544,37 @@ final class BleCore {
         }
     }
 
+    /// The disk-durable journal, asked by the extension on its own timer after events: the records
+    /// ({seq, t, event, data}) to append to this run's file since the last call, or, once the file
+    /// holds twice the window's record count, the whole window to replace it with (`rewrite`), so
+    /// the file stays bounded. Nil when there is nothing new.
+    func journalToPersist() -> (records: [BleObj], rewrite: Bool)? {
+        var out: [BleObj] = []
+        var rewrite = false
+        if persistedSinceRewrite >= BleCore.journalRecords * 2 {
+            rewrite = true
+            for i in journalHead..<journal.count { out.append(journalRecord(journal[i])) }
+            persistedSinceRewrite = out.count
+        } else {
+            for i in journalHead..<journal.count where journal[i].seq > persistedSeq { out.append(journalRecord(journal[i])) }
+            persistedSinceRewrite += out.count
+        }
+        if journal.count > journalHead { persistedSeq = journal[journal.count - 1].seq }
+        return out.isEmpty && !rewrite ? nil : (out, rewrite)
+    }
+
+    private func journalRecord(_ r: (seq: Int, t: Int, event: String, data: BleObj, size: Int)) -> BleObj {
+        BleCore.obj(("seq", r.seq), ("t", r.t), ("event", r.event), ("data", r.data))
+    }
+
+    /// Launch: the previous process's journal as its file held it (records {seq, t, event, data},
+    /// oldest first). Only the newest `journalRecords` are kept; `events` with `run` reads them.
+    func loadPrevious(_ run: String, _ records: [BleObj]) {
+        previousRun = run
+        previousDropped = max(0, records.count - BleCore.journalRecords)
+        previousRecords = Array(records.suffix(BleCore.journalRecords))
+    }
+
     /// An event that is also a journal record.
     private func record(_ event: String, _ data: BleObj) {
         append(event, data)
@@ -603,15 +683,52 @@ final class BleCore {
     /// Fields of the state reply that the core owns.
     func stateFields() -> BleObj {
         BleCore.obj(("scanning", scan != 0), ("advertising", advertising), ("links", links.count),
-                    ("centrals", centralList.count), ("keepAlive", keepAliveWanted), ("epoch", epoch), ("run", run))
+                    ("centrals", centralList.count), ("keepAlive", keepAliveWanted), ("epoch", epoch), ("run", run),
+                    ("previousRun", BleCore.nul(previousRun)))
     }
 
     // MARK: scan
 
-    func scanStart(_ call: Int, _ servicesCsv: String?, _ seconds: Int, _ duplicates: Bool, _ mode: String, _ background: Bool) {
+    /// The scan options passed through to the radio, by route parameter name.
+    static let scanOptionKeys = ["legacy", "phy", "report_delay", "callback_type", "match", "matches", "solicited"]
+
+    /// What this platform applies of the given scan options: Android's ScanSettings (legacy, phy,
+    /// report_delay, callback, match, matches); iOS's solicited service UUIDs. Names and the
+    /// manufacturer filter are the core's own, so they apply on both.
+    func scanApplied(_ options: BleObj, names: Bool, manufacturer: Bool) -> BleObj {
+        let out = BleObj()
+        if names { out["names"] = true }
+        if manufacturer { out["manufacturer"] = true }
+        for k in options.keys { out[k] = k == "solicited" ? !android : android }
+        return out
+    }
+
+    func scanStart(_ call: Int, _ servicesCsv: String?, _ seconds: Int, _ duplicates: Bool, _ mode: String, _ background: Bool,
+                   names namesCsv: String? = nil, manufacturerId: Int = -1, manufacturerHex: String? = nil,
+                   options: BleObj = BleObj()) {
         guard let services = BleCore.uuidList(servicesCsv) else {
             fail(call, "bad_value", "services must be up to 20 UUIDs")
             return
+        }
+        guard let names = BleCore.nameList(namesCsv) else {
+            fail(call, "bad_value", "names must be up to 10 comma-separated names of 1 to 248 bytes")
+            return
+        }
+        let prefix = manufacturerHex.flatMap { BleCore.fromHex($0) }
+        if manufacturerId > 0xFFFF || (manufacturerHex != nil && (prefix == nil || manufacturerId < 0)) {
+            fail(call, "bad_value", "manufacturer_id is 0 to 65535; manufacturer_hex is hex bytes and needs manufacturer_id")
+            return
+        }
+        for k in options.keys where !BleCore.scanOptionKeys.contains(k) {
+            fail(call, "bad_value", "unknown scan option \(k); the options are " + BleCore.scanOptionKeys.joined(separator: ", "))
+            return
+        }
+        if let sol = options["solicited"] as? String {
+            guard let list = BleCore.uuidList(sol) else {
+                fail(call, "bad_value", "solicited must be up to 20 UUIDs")
+                return
+            }
+            options["solicited"] = list as [Any]
         }
         if !on {
             fail(call, "unavailable", "Bluetooth is \(adapterState)")
@@ -627,7 +744,11 @@ final class BleCore {
         }
         nextScan += 1
         let s = nextScan
-        if let err = port.scanStart(s, services, duplicates, mode) {
+        // Set before the port call: the radio builds its platform filters from them.
+        scanNames = names
+        scanManufacturer = manufacturerId
+        scanManufacturerPrefix = prefix ?? []
+        if let err = port.scanStart(s, services, duplicates, mode, options) {
             refused(call, err)
             return
         }
@@ -637,7 +758,25 @@ final class BleCore {
         deviceOrder = []
         filtered = !services.isEmpty
         if seconds > 0 { port.timer("scan", s, seconds * 1000) }
-        ok(call, BleCore.obj(("scan", s)))
+        ok(call, BleCore.obj(("scan", s),
+                             ("applied", scanApplied(options, names: !names.isEmpty, manufacturer: manufacturerId >= 0))))
+    }
+
+    /// Whether an advertisement passes the scan's own name and manufacturer filters.
+    private func matches(_ adv: BleObj) -> Bool {
+        if !scanNames.isEmpty {
+            guard let n = adv["name"] as? String, scanNames.contains(n) else { return false }
+        }
+        if scanManufacturer >= 0 {
+            let list = (adv["manufacturer"] as? [Any]) ?? []
+            let hit = list.contains { m in
+                guard let o = m as? BleObj, o["id"] as? Int == scanManufacturer,
+                      let b = BleCore.fromHex(o["hex"] as? String) else { return false }
+                return b.count >= scanManufacturerPrefix.count && Array(b[0..<scanManufacturerPrefix.count]) == scanManufacturerPrefix
+            }
+            if !hit { return false }
+        }
+        return true
     }
 
     func scanStop(_ call: Int) {
@@ -664,6 +803,7 @@ final class BleCore {
             stale("device scan \(s)")
             return
         }
+        if !matches(adv) { return }
         var d = devices[id]
         if d == nil {
             if devices.count >= BleCore.devicesMax { return }
@@ -729,10 +869,26 @@ final class BleCore {
         return true
     }
 
+    /// `seconds` 0: the attempt waits for the device without a time limit (iOS keeps a pending
+    /// connection, Android connects with autoConnect); the route answers at once with `connecting`
+    /// and the `link` event reports the connection.
     func connect(_ call: Int, _ id: String?, _ auto: Bool, _ seconds: Int) {
         guard checkId(call, id), let id = id else { return }
         if !on {
             fail(call, "unavailable", "Bluetooth is \(adapterState)")
+            return
+        }
+        if seconds == 0 {
+            if links[id] != nil || closing[id] != nil {
+                fail(call, "busy", "this device is linked, connecting or closing")
+                return
+            }
+            startLink(id, auto: auto, call: -1, seconds: 0, background: true, wanted: [], unbounded: true)
+            guard let l = links[id] else {
+                fail(call, lastRefusal.0, lastRefusal.1)
+                return
+            }
+            ok(call, BleCore.obj(("id", id), ("link", l.gen), ("state", "connecting"), ("mtu", l.mtu)))
             return
         }
         if let l = links[id] {
@@ -742,6 +898,7 @@ final class BleCore {
                 l.connectCall = call
                 l.auto = auto
                 l.background = false
+                l.unbounded = false
                 boundPending(l, seconds * 1000)
                 return
             }
@@ -763,22 +920,34 @@ final class BleCore {
         startLink(id, auto: auto, call: call, seconds: seconds, background: false, wanted: [])
     }
 
-    private func startLink(_ id: String, auto: Bool, call: Int, seconds: Int, background: Bool, wanted: [String]) {
+    /// The last port refusal of a connect no call owned ("code", "message").
+    private var lastRefusal = ("connect_failed", "")
+
+    private func startLink(_ id: String, auto: Bool, call: Int, seconds: Int, background: Bool, wanted: [String],
+                           unbounded: Bool = false) {
         nextGen += 1
         let l = Link(id, nextGen)
         l.auto = auto
         l.background = background
+        l.unbounded = unbounded
         l.connectCall = call
         for k in wanted { l.addWanted(k) }
         putLink(l)
         if let err = port.connect(id, l.gen, auto, background) {
             removeLink(id)
             l.closed = true
+            if let sp = err.firstIndex(of: " ") {
+                lastRefusal = (String(err[..<sp]), String(err[err.index(after: sp)...]))
+            } else {
+                lastRefusal = (err, "")
+            }
             refused(call, err)
             return
         }
         if call >= 0 { port.timer("connect", l.gen, seconds * 1000) }
-        if background {
+        if unbounded {
+            record("link", BleCore.obj(("id", id), ("link", l.gen), ("state", "connecting"), ("reason", "requested")))
+        } else if background {
             record("link", BleCore.obj(("id", id), ("link", l.gen), ("state", "reconnecting"), ("reason", "auto")))
         }
         updateHold()
@@ -1007,17 +1176,10 @@ final class BleCore {
     }
 
     func write(_ call: Int, _ id: String?, _ service: String?, _ sn: Int, _ chr: String?, _ cn: Int, _ descriptor: String?,
-               _ hexValue: String?, _ b64Value: String?, _ response: Bool) {
+               _ hexValue: String?, _ b64Value: String?, _ response: Bool, text: String? = nil) {
         guard let l = connectedLink(call, id) else { return }
         guard let k = target(call, service, sn, chr, cn) else { return }
-        guard let data = BleCore.bytes(hexValue, b64Value) else {
-            fail(call, "bad_value", "give exactly one of hex and b64, well formed")
-            return
-        }
-        if data.count > BleCore.writeMax {
-            fail(call, "too_long", "\(data.count) bytes; at most \(BleCore.writeMax)")
-            return
-        }
+        guard let data = writeData(call, hexValue, b64Value, text) else { return }
         var withResponse = response
         var d: String?
         if descriptor != nil {
@@ -1033,6 +1195,87 @@ final class BleCore {
         o.descriptor = d
         o.data = data
         enqueue(call, l, o)
+    }
+
+    /// The bytes of a write (exactly one of hex, b64 and text), or nil after failing the call.
+    private func writeData(_ call: Int, _ hexValue: String?, _ b64Value: String?, _ text: String?) -> [UInt8]? {
+        guard let data = BleCore.bytes(hexValue, b64Value, text) else {
+            fail(call, "bad_value", "give exactly one of hex, b64 and text, well formed")
+            return nil
+        }
+        if data.count > BleCore.writeMax {
+            fail(call, "too_long", "\(data.count) bytes; at most \(BleCore.writeMax)")
+            return nil
+        }
+        return data
+    }
+
+    /// The `raw` route: bytes to the first discovered characteristic that takes the write
+    /// (with response by default). The reply names the characteristic.
+    func raw(_ call: Int, _ id: String?, _ hexValue: String?, _ b64Value: String?, _ text: String?, _ response: Bool) {
+        guard let l = connectedLink(call, id) else { return }
+        guard let data = writeData(call, hexValue, b64Value, text) else { return }
+        guard let k = port.writable(l.id, l.gen, response) else {
+            fail(call, "not_found", "no discovered characteristic takes a write " + (response ? "with" : "without")
+                 + " response (run discover first)")
+            return
+        }
+        let o = Op(call, response ? "write" : "wnr")
+        o.key = k
+        o.data = data
+        o.raw = true
+        enqueue(call, l, o)
+    }
+
+    /// Android requestConnectionPriority: `level` balanced, high, low_power or dck.
+    func priority(_ call: Int, _ id: String?, _ level: String) {
+        guard let l = connectedLink(call, id) else { return }
+        if !android {
+            fail(call, "platform_limit", "iOS has no API to request a connection priority or interval; the system and the peripheral set it")
+            return
+        }
+        let o = Op(call, "priority")
+        o.key = level
+        enqueue(call, l, o)
+    }
+
+    /// Android setPreferredPhy (tx and rx given, `coded` none, s2 or s8) or readPhy (neither given).
+    func phy(_ call: Int, _ id: String?, _ tx: String?, _ rx: String?, _ coded: String) {
+        guard let l = connectedLink(call, id) else { return }
+        if !android {
+            fail(call, "platform_limit", "iOS has no API to read or set the LE PHY; the system chooses it")
+            return
+        }
+        if tx == nil && rx == nil {
+            enqueue(call, l, Op(call, "phy_read"))
+            return
+        }
+        guard let t = BleCore.phyList(tx ?? rx), let r = BleCore.phyList(rx ?? tx) else {
+            fail(call, "bad_value", "tx and rx are comma-separated PHYs: 1m, 2m, coded")
+            return
+        }
+        let o = Op(call, "phy_set")
+        o.key = t.joined(separator: ",") + "/" + r.joined(separator: ",") + "/" + coded
+        enqueue(call, l, o)
+    }
+
+    /// The link's PHY changed (Android onPhyUpdate). It completes a phy_set in flight; otherwise it is a `phy` event.
+    func phyChanged(_ id: String, _ gen: Int, _ tx: String, _ rx: String, _ code: String?) {
+        guard let l = live(id, gen, "phy") else { return }
+        if let o = l.inFlight, o.kind == "phy_set" {
+            l.inFlight = nil
+            settle(l, o, code.map { _ in "gatt_error" }, code.map { "the PHY update failed: \($0)" },
+                   BleCore.obj(("tx", tx), ("rx", rx)))
+            pump(l)
+            return
+        }
+        if code == nil { record("phy", BleCore.obj(("id", id), ("link", gen), ("tx", tx), ("rx", rx))) }
+    }
+
+    /// An event the extension produces outside the core's state (bond changes, for one): kept in the
+    /// journal like every event.
+    func external(_ event: String, _ data: BleObj) {
+        record(event, data)
     }
 
     func subscribe(_ call: Int, _ id: String?, _ service: String?, _ sn: Int, _ chr: String?, _ cn: Int, _ on: Bool) {
@@ -1110,7 +1353,7 @@ final class BleCore {
 
     private func ready(_ l: Link) {
         record("link", BleCore.obj(("id", l.id), ("link", l.gen), ("state", "connected"),
-                                   ("reason", l.background ? "auto" : "requested"),
+                                   ("reason", l.background && !l.unbounded ? "auto" : "requested"),
                                    ("resubscribed", l.resubscribed), ("failed", l.failed)))
         if l.connectCall >= 0 {
             ok(l.connectCall, BleCore.obj(("id", l.id), ("link", l.gen), ("state", "connected"), ("mtu", l.mtu)))
@@ -1153,10 +1396,14 @@ final class BleCore {
             return
         }
         switch o.kind {
-        case "write":
-            ok(o.call, BleCore.obj(("written", o.data!.count), ("chunks", 1)))
-        case "wnr":
-            ok(o.call, BleCore.obj(("written", o.data!.count), ("chunks", o.chunks)))
+        case "write", "wnr":
+            let r = BleCore.obj(("written", o.data!.count), ("chunks", o.kind == "wnr" ? o.chunks : 1))
+            if o.raw, let k = o.key {
+                let p = k.split(whereSeparator: { $0 == "#" || $0 == "/" }).map(String.init)
+                r.putAll(BleCore.obj(("service", p[0]), ("char", p[2]), ("service_n", Int(p[1])!), ("char_n", Int(p[3])!),
+                                     ("response", o.kind == "write")))
+            }
+            ok(o.call, r)
         case "sub":
             let mode = (data?["mode"] as? String) ?? "notify"
             l.setSub(o.key!, mode)
@@ -1523,13 +1770,14 @@ final class BleCore {
         ok(call, BleCore.obj(("services", services.map { serviceView($0) } as [Any]), ("advertising", advertising)))
     }
 
-    func valueSet(_ call: Int, _ serviceUUID: String?, _ chrUUID: String?, _ cn: Int, _ hexValue: String?, _ b64Value: String?) {
+    func valueSet(_ call: Int, _ serviceUUID: String?, _ chrUUID: String?, _ cn: Int, _ hexValue: String?, _ b64Value: String?,
+                  text: String? = nil) {
         guard let c = chr(serviceUUID, chrUUID, cn) else {
             fail(call, "not_found", "no such characteristic in the table")
             return
         }
-        guard let data = BleCore.bytes(hexValue, b64Value) else {
-            fail(call, "bad_value", "give exactly one of hex and b64, well formed")
+        guard let data = BleCore.bytes(hexValue, b64Value, text) else {
+            fail(call, "bad_value", "give exactly one of hex, b64 and text, well formed")
             return
         }
         if overMax(call, data) { return }
@@ -1546,13 +1794,13 @@ final class BleCore {
     }
 
     func notify(_ call: Int, _ serviceUUID: String?, _ chrUUID: String?, _ cn: Int, _ hexValue: String?, _ b64Value: String?,
-                _ central: String?) {
+                _ central: String?, text: String? = nil) {
         guard let c = chr(serviceUUID, chrUUID, cn) else {
             fail(call, "not_found", "no such characteristic in the table")
             return
         }
-        guard let data = BleCore.bytes(hexValue, b64Value) else {
-            fail(call, "bad_value", "give exactly one of hex and b64, well formed")
+        guard let data = BleCore.bytes(hexValue, b64Value, text) else {
+            fail(call, "bad_value", "give exactly one of hex, b64 and text, well formed")
             return
         }
         if overMax(call, data) { return }
@@ -1827,7 +2075,8 @@ final class BleCore {
     // MARK: advertising
 
     func advertiseStart(_ call: Int, _ servicesCsv: String?, _ name: String?, _ manufacturerId: Int, _ manufacturerHex: String?,
-                        _ serviceDataUuid: String?, _ serviceDataHex: String?, _ connectable: Bool, _ mode: String, _ seconds: Int) {
+                        _ serviceDataUuid: String?, _ serviceDataHex: String?, _ connectable: Bool, _ mode: String, _ seconds: Int,
+                        txPower: String? = nil, includeTxPower: Bool? = nil) {
         guard let uuids = BleCore.uuidList(servicesCsv) else {
             fail(call, "bad_value", "services must be up to 20 UUIDs")
             return
@@ -1857,6 +2106,10 @@ final class BleCore {
                             ("serviceDataUuid", BleCore.nul(sdUuid)),
                             ("serviceDataHex", BleCore.nul(serviceDataHex?.lowercased())),
                             ("connectable", connectable), ("mode", mode), ("seconds", seconds))
+        // Android's AdvertiseSettings tx power level and AdvertiseData tx power field; only when given,
+        // so a request without them keeps the platform default.
+        if let t = txPower { p["txPower"] = t }
+        if let i = includeTxPower { p["includeTxPower"] = i }
         advWanted = p
         advUntil = 0
         advCall = call
@@ -1881,15 +2134,18 @@ final class BleCore {
     private static func isSet(_ v: Any?) -> Bool { v != nil && !(v is NSNull) }
 
     /// A JSON value, null when absent (BleObj keeps no nil).
-    private static func nul(_ v: Any?) -> Any { v ?? NSNull() }
+    static func nul(_ v: Any?) -> Any { v ?? NSNull() }
 
     /// What this platform really advertises of the request.
     private func applied(_ p: BleObj) -> BleObj {
-        BleCore.obj(("name", BleCore.nul(BleCore.isSet(p["name"]) ? (android ? "adapter" : "given") : nil)),
-                    ("manufacturer", android && BleCore.isSet(p["manufacturerId"])),
-                    ("serviceData", android && BleCore.isSet(p["serviceDataUuid"])),
-                    ("connectable", android ? p["connectable"]! : true as Any),
-                    ("mode", android ? p["mode"]! : NSNull() as Any))
+        let a = BleCore.obj(("name", BleCore.nul(BleCore.isSet(p["name"]) ? (android ? "adapter" : "given") : nil)),
+                            ("manufacturer", android && BleCore.isSet(p["manufacturerId"])),
+                            ("serviceData", android && BleCore.isSet(p["serviceDataUuid"])),
+                            ("connectable", android ? p["connectable"]! : true as Any),
+                            ("mode", android ? p["mode"]! : NSNull() as Any))
+        if BleCore.isSet(p["txPower"]) { a["txPower"] = android ? p["txPower"]! : NSNull() as Any }
+        if BleCore.isSet(p["includeTxPower"]) { a["includeTxPower"] = android && (p["includeTxPower"] as? Bool ?? false) }
+        return a
     }
 
     func advertiseStarted(_ e: Int, _ t: Int, _ code: String?) {
@@ -2082,6 +2338,7 @@ final class BleCore {
                         "connectable", "mode", "seconds"]
             let p = BleObj()
             for k in keys { p[k] = a[k] ?? NSNull() }
+            for k in ["txPower", "includeTxPower"] where a[k] != nil { p[k] = a[k] }
             if !(p["seconds"] is Int) { p["seconds"] = 0 }
             advWanted = p
             nextAdv += 1
@@ -2197,6 +2454,7 @@ final class BleCore {
         case "persist":
             persistScheduled = false
             port.persist(serverSnapshot())
+
         default:
             stale("timer \(kind)")
         }
@@ -2204,7 +2462,25 @@ final class BleCore {
 
     // MARK: journal
 
-    func events(_ call: Int, _ after: Int, _ max: Int) {
+    /// `run`: nil or this run reads the live journal; the previous run's id reads the journal the
+    /// previous app process left on disk.
+    func events(_ call: Int, _ after: Int, _ max: Int, run asked: String? = nil) {
+        if let r = asked, r != run {
+            guard r == previousRun else {
+                fail(call, "not_found", "no journal is kept for that run")
+                return
+            }
+            var out: [Any] = []
+            var next = after
+            for rec in previousRecords where out.count < max {
+                let seq = rec["seq"] as? Int ?? 0
+                if seq <= after { continue }
+                out.append(rec)
+                next = seq
+            }
+            ok(call, BleCore.obj(("records", out), ("next", next), ("dropped", previousDropped), ("run", r)))
+            return
+        }
         var out: [Any] = []
         var next = after
         var i = journalHead

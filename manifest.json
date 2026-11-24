@@ -1,5 +1,5 @@
 {
-  "version": "1.0.0",
+  "version": "1.1.0",
   "bridge": {
     "routes": [
       {
@@ -25,6 +25,10 @@
             "type": "int",
             "min": 1,
             "max": 200
+          },
+          "run": {
+            "type": "string",
+            "max": 64
           }
         },
         "output": {
@@ -52,8 +56,65 @@
             "values": [
               "low_power",
               "balanced",
-              "low_latency"
+              "low_latency",
+              "opportunistic"
             ]
+          },
+          "names": {
+            "type": "string",
+            "max": 2600
+          },
+          "manufacturer_id": {
+            "type": "int",
+            "min": 0,
+            "max": 65535
+          },
+          "manufacturer_hex": {
+            "type": "string",
+            "max": 62
+          },
+          "legacy": {
+            "type": "bool"
+          },
+          "phy": {
+            "type": "enum",
+            "values": [
+              "1m",
+              "coded",
+              "all"
+            ]
+          },
+          "report_delay": {
+            "type": "int",
+            "min": 0,
+            "max": 600000
+          },
+          "callback_type": {
+            "type": "enum",
+            "values": [
+              "all",
+              "first_match",
+              "first_match_lost"
+            ]
+          },
+          "match": {
+            "type": "enum",
+            "values": [
+              "aggressive",
+              "sticky"
+            ]
+          },
+          "matches": {
+            "type": "enum",
+            "values": [
+              "one",
+              "few",
+              "max"
+            ]
+          },
+          "solicited": {
+            "type": "string",
+            "max": 740
           }
         },
         "output": {
@@ -90,8 +151,32 @@
           },
           "seconds": {
             "type": "int",
-            "min": 1,
+            "min": 0,
             "max": 20
+          },
+          "server": {
+            "type": "https_url",
+            "hosts": [
+              "api.example.com"
+            ]
+          },
+          "notify_on_connection": {
+            "type": "bool"
+          },
+          "notify_on_disconnection": {
+            "type": "bool"
+          },
+          "notify_on_notification": {
+            "type": "bool"
+          },
+          "transport_bridging": {
+            "type": "bool"
+          },
+          "requires_ancs": {
+            "type": "bool"
+          },
+          "system_reconnect": {
+            "type": "bool"
           }
         },
         "timeout_ms": 25000,
@@ -216,11 +301,44 @@
           },
           "response": {
             "type": "bool"
+          },
+          "text": {
+            "type": "string",
+            "max": 512
           }
         },
         "output": {
           "variable": "bleWrite",
           "callback": "onBleWrite"
+        }
+      },
+      {
+        "name": "raw",
+        "params": {
+          "id": {
+            "type": "string",
+            "max": 64,
+            "required": true
+          },
+          "hex": {
+            "type": "string",
+            "max": 1024
+          },
+          "b64": {
+            "type": "string",
+            "max": 684
+          },
+          "text": {
+            "type": "string",
+            "max": 512
+          },
+          "response": {
+            "type": "bool"
+          }
+        },
+        "output": {
+          "variable": "bleRaw",
+          "callback": "onBleRaw"
         }
       },
       {
@@ -250,6 +368,12 @@
             "type": "int",
             "min": 0,
             "max": 31
+          },
+          "server": {
+            "type": "https_url",
+            "hosts": [
+              "api.example.com"
+            ]
           }
         },
         "output": {
@@ -325,6 +449,111 @@
         }
       },
       {
+        "name": "priority",
+        "params": {
+          "id": {
+            "type": "string",
+            "max": 64,
+            "required": true
+          },
+          "level": {
+            "type": "enum",
+            "values": [
+              "balanced",
+              "high",
+              "low_power",
+              "dck"
+            ]
+          }
+        },
+        "output": {
+          "variable": "blePriority",
+          "callback": "onBlePriority"
+        }
+      },
+      {
+        "name": "phy",
+        "params": {
+          "id": {
+            "type": "string",
+            "max": 64,
+            "required": true
+          },
+          "tx": {
+            "type": "string",
+            "max": 14
+          },
+          "rx": {
+            "type": "string",
+            "max": 14
+          },
+          "coded": {
+            "type": "enum",
+            "values": [
+              "none",
+              "s2",
+              "s8"
+            ]
+          }
+        },
+        "output": {
+          "variable": "blePhy",
+          "callback": "onBlePhy"
+        }
+      },
+      {
+        "name": "bond",
+        "params": {
+          "id": {
+            "type": "string",
+            "max": 64,
+            "required": true
+          }
+        },
+        "output": {
+          "variable": "bleBond",
+          "callback": "onBleBond"
+        }
+      },
+      {
+        "name": "bonds",
+        "params": {},
+        "output": {
+          "variable": "bleBonds",
+          "callback": "onBleBonds"
+        }
+      },
+      {
+        "name": "system_devices",
+        "params": {
+          "services": {
+            "type": "string",
+            "max": 740
+          }
+        },
+        "output": {
+          "variable": "bleSystemDevices",
+          "callback": "onBleSystemDevices"
+        }
+      },
+      {
+        "name": "connection_events",
+        "params": {
+          "services": {
+            "type": "string",
+            "max": 740
+          },
+          "ids": {
+            "type": "string",
+            "max": 740
+          }
+        },
+        "output": {
+          "variable": "bleConnectionEvents",
+          "callback": "onBleConnectionEvents"
+        }
+      },
+      {
         "name": "service_add",
         "params": {
           "uuid": {
@@ -391,6 +620,10 @@
           "b64": {
             "type": "string",
             "max": 684
+          },
+          "text": {
+            "type": "string",
+            "max": 512
           }
         },
         "output": {
@@ -427,6 +660,10 @@
           "central": {
             "type": "string",
             "max": 64
+          },
+          "text": {
+            "type": "string",
+            "max": 512
           }
         },
         "output": {
@@ -476,6 +713,18 @@
             "type": "int",
             "min": 0,
             "max": 3600
+          },
+          "tx_power": {
+            "type": "enum",
+            "values": [
+              "ultra_low",
+              "low",
+              "medium",
+              "high"
+            ]
+          },
+          "include_tx_power": {
+            "type": "bool"
           }
         },
         "output": {
@@ -577,6 +826,26 @@
         "name": "advertise_end",
         "callback": "onBleAdvertiseEnd",
         "scope": "document"
+      },
+      {
+        "name": "bond",
+        "callback": "onBleBond",
+        "scope": "document"
+      },
+      {
+        "name": "phy",
+        "callback": "onBlePhy",
+        "scope": "document"
+      },
+      {
+        "name": "connection_event",
+        "callback": "onBleConnectionEvent",
+        "scope": "document"
+      },
+      {
+        "name": "ancs",
+        "callback": "onBleAncs",
+        "scope": "document"
       }
     ]
   },
@@ -587,7 +856,8 @@
         "ios/app/BleExtension.swift",
         "ios/app/BleCore.swift",
         "ios/app/BleCentralRadio.swift",
-        "ios/app/BlePeripheralRadio.swift"
+        "ios/app/BlePeripheralRadio.swift",
+        "ios/app/BleServerMirror.swift"
       ],
       "frameworks": [
         "CoreBluetooth"

@@ -23,11 +23,15 @@ import org.json.JSONArray;
 import org.json.JSONException;
 import org.json.JSONObject;
 
+import java.io.File;
+import java.io.FileOutputStream;
 import java.util.ArrayList;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.UUID;
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.Executors;
 
 /**
  * Universal Bluetooth LE for the page: scan, connect, GATT client, GATT server, advertising, the
@@ -60,6 +64,12 @@ public final class BleExtension implements NativeExtension, BleCore.Port {
     private Attempt pending;
     private int nextCall;
     private final Map<Integer, Waiting> calls = new HashMap<>();
+    private ServerMirror mirror;
+    /** The disk-durable journal: {@code ble/journal.jsonl} (this run) and {@code ble/journal-prev.jsonl}. */
+    private File journalFile;
+    private final ExecutorService journalIo = Executors.newSingleThreadExecutor();
+    private boolean persistPosted;
+    static final long PERSIST_MS = 250;
 
     private static final class Attempt {
         final ExtCall call;
@@ -87,8 +97,93 @@ public final class BleExtension implements NativeExtension, BleCore.Port {
     @Override
     public void onCreate(ExtContext context) {
         ctx = context;
-        core = new BleCore(this, "android", UUID.randomUUID().toString());
+        String run = UUID.randomUUID().toString();
+        core = new BleCore(this, "android", run);
         radio = new AndroidRadio(context.app(), main, core);
+        mirror = new ServerMirror(context, main);
+        openJournal(run);
+    }
+
+    /**
+     * Launch: the previous process's journal becomes {@code events?run=<previousRun>}; this run gets a
+     * fresh file. Reading a file starts no radio (nothing starts at launch).
+     */
+    private void openJournal(String run) {
+        File dir = new File(ctx.dataDir(), "ble");
+        //noinspection ResultOfMethodCallIgnored
+        dir.mkdirs();
+        journalFile = new File(dir, "journal.jsonl");
+        File prev = new File(dir, "journal-prev.jsonl");
+        try {
+            if (journalFile.exists()) {
+                String[] lines = ServerMirror.readText(journalFile).split("\n");
+                String prevRun = lines.length == 0 || lines[0].isEmpty() ? null : new JSONObject(lines[0]).optString("run", null);
+                List<Map<String, Object>> records = new ArrayList<>();
+                for (int i = 1; i < lines.length; i++) {
+                    if (lines[i].isEmpty()) continue;
+                    try {
+                        records.add(fromJson(new JSONObject(lines[i])));
+                    } catch (JSONException torn) {
+                        // The last line of a process that died mid-write: everything before it stands.
+                    }
+                }
+                if (prevRun != null) core.loadPrevious(prevRun, records);
+                //noinspection ResultOfMethodCallIgnored
+                journalFile.renameTo(prev);
+            }
+            writeJournal(new JSONObject().put("run", run).toString() + "\n", false);
+        } catch (Exception e) {
+            ctx.log("journal file: " + e.getClass().getSimpleName());
+        }
+    }
+
+    private void writeJournal(String text, boolean append) {
+        journalIo.execute(() -> {
+            try (FileOutputStream out = new FileOutputStream(journalFile, append)) {
+                out.write(text.getBytes(java.nio.charset.StandardCharsets.UTF_8));
+                out.getFD().sync();
+            } catch (Exception e) {
+                ctx.log("journal file: " + e.getClass().getSimpleName());
+            }
+        });
+    }
+
+    /** Appends the records since the last call, or rewrites the bounded window (BleCore.journalToPersist). */
+    @SuppressWarnings("unchecked")
+    private void persistJournal() {
+        persistPosted = false;
+        Object[] j = core.journalToPersist();
+        if (j == null) return;
+        StringBuilder b = new StringBuilder();
+        try {
+            boolean rewrite = (Boolean) j[1];
+            if (rewrite) b.append(new JSONObject().put("run", core.run).toString()).append('\n');
+            for (Map<String, Object> r : (List<Map<String, Object>>) j[0]) b.append(toJson(r).toString()).append('\n');
+            writeJournal(b.toString(), !rewrite);
+        } catch (JSONException e) {
+            ctx.log("journal record is not JSON: " + e.getMessage());
+        }
+    }
+
+    @SuppressWarnings("unchecked")
+    static Map<String, Object> fromJson(JSONObject o) throws JSONException {
+        Map<String, Object> m = BleCore.obj();
+        for (java.util.Iterator<String> it = o.keys(); it.hasNext(); ) {
+            String k = it.next();
+            m.put(k, fromJsonValue(o.opt(k)));
+        }
+        return m;
+    }
+
+    private static Object fromJsonValue(Object v) throws JSONException {
+        if (v instanceof JSONObject) return fromJson((JSONObject) v);
+        if (v instanceof JSONArray) {
+            List<Object> l = new ArrayList<>();
+            JSONArray a = (JSONArray) v;
+            for (int i = 0; i < a.length(); i++) l.add(fromJsonValue(a.opt(i)));
+            return l;
+        }
+        return v == JSONObject.NULL ? null : v;
     }
 
     @Override
@@ -142,6 +237,13 @@ public final class BleExtension implements NativeExtension, BleCore.Port {
             case "notify":
             case "central_drop":
             case "connect":
+            case "raw":
+            case "priority":
+            case "phy":
+            case "bond":
+            case "bonds":
+            case "system_devices":
+            case "connection_events":
             case "disconnect":
             case "discover":
             case "read":
@@ -213,6 +315,17 @@ public final class BleExtension implements NativeExtension, BleCore.Port {
         radio.start();
         core.adapter(radio.adapterState());
         core.background(startedActivities == 0);
+        mirror.pump();
+    }
+
+    /** The scan options the page gave, by the core's keys (BleCore.SCAN_OPTION_KEYS). */
+    private static Map<String, Object> scanOptions(ExtCall call) {
+        Map<String, Object> o = BleCore.obj();
+        for (String k : BleCore.SCAN_OPTION_KEYS) {
+            Object v = call.params.get(k);
+            if (v != null) o.put(k, v);
+        }
+        return o;
     }
 
     private static int num(ExtCall call, String name, int dflt) {
@@ -240,11 +353,12 @@ public final class BleExtension implements NativeExtension, BleCore.Port {
                 state(c);
                 return;
             case "events":
-                core.events(c, num(call, "after", 0), num(call, "max", 200));
+                core.events(c, num(call, "after", 0), num(call, "max", 200), str(call, "run"));
                 return;
             case "scan_start":
                 core.scanStart(c, str(call, "services"), num(call, "seconds", 0), flag(call, "duplicates", false),
-                        call.params.containsKey("mode") ? str(call, "mode") : "balanced", startedActivities == 0);
+                        call.params.containsKey("mode") ? str(call, "mode") : "balanced", startedActivities == 0,
+                        str(call, "names"), num(call, "manufacturer_id", -1), str(call, "manufacturer_hex"), scanOptions(call));
                 return;
             case "scan_stop":
                 core.scanStop(c);
@@ -253,11 +367,55 @@ public final class BleExtension implements NativeExtension, BleCore.Port {
                 core.devices(c);
                 return;
             case "connect":
+                if (str(call, "server") != null && id != null) mirror.watchState(id, str(call, "server"));
                 core.connect(c, id, flag(call, "auto", false), num(call, "seconds", 10));
                 return;
             case "disconnect":
                 core.disconnect(c, id);
                 return;
+            case "raw":
+                core.raw(c, id, str(call, "hex"), str(call, "b64"), str(call, "text"), flag(call, "response", true));
+                return;
+            case "priority":
+                core.priority(c, id, call.params.containsKey("level") ? str(call, "level") : "balanced");
+                return;
+            case "phy":
+                core.phy(c, id, str(call, "tx"), str(call, "rx"), call.params.containsKey("coded") ? str(call, "coded") : "none");
+                return;
+            case "bond":
+                bond(c, id);
+                return;
+            case "bonds": {
+                List<Object> l = radio.bonds();
+                if (l == null) reply(c, false, "unavailable", "Bluetooth is " + radio.adapterState(), null);
+                else reply(c, true, null, null, BleCore.obj("devices", l));
+                return;
+            }
+            case "system_devices": {
+                List<Object> l = radio.systemDevices();
+                if (l == null) reply(c, false, "unavailable", "Bluetooth is " + radio.adapterState(), null);
+                else reply(c, true, null, null, BleCore.obj("devices", l));
+                return;
+            }
+            case "connection_events": {
+                List<String> svc = BleCore.uuidList(str(call, "services"));
+                if (svc == null) {
+                    reply(c, false, "bad_value", "services must be up to 20 UUIDs", null);
+                    return;
+                }
+                List<String> ids = new ArrayList<>();
+                String raw = str(call, "ids");
+                if (raw != null) for (String x : raw.split(",")) if (!x.isEmpty()) ids.add(x);
+                String err = radio.connectionEvents(ids);
+                if (err != null) {
+                    int sp = err.indexOf(' ');
+                    reply(c, false, sp < 0 ? err : err.substring(0, sp), sp < 0 ? err : err.substring(sp + 1), null);
+                    return;
+                }
+                reply(c, true, null, null, BleCore.obj("services", new ArrayList<Object>(svc), "ids", new ArrayList<Object>(ids),
+                        "applied", BleCore.obj("services", svc.isEmpty(), "ids", true)));
+                return;
+            }
             case "links":
                 core.links(c);
                 return;
@@ -270,13 +428,20 @@ public final class BleExtension implements NativeExtension, BleCore.Port {
                 return;
             case "write":
                 core.write(c, id, str(call, "service"), num(call, "service_n", 0), str(call, "char"), num(call, "char_n", 0),
-                        str(call, "descriptor"), str(call, "hex"), str(call, "b64"), flag(call, "response", true));
+                        str(call, "descriptor"), str(call, "hex"), str(call, "b64"), flag(call, "response", true), str(call, "text"));
                 return;
             case "subscribe":
-            case "unsubscribe":
+            case "unsubscribe": {
+                String su = BleCore.uuid(str(call, "service")), cu = BleCore.uuid(str(call, "char"));
+                if (id != null && su != null && cu != null) {
+                    String k = BleCore.key(su, num(call, "service_n", 0), cu, num(call, "char_n", 0));
+                    if (!"subscribe".equals(call.route)) mirror.unwatchData(id, k);
+                    else if (str(call, "server") != null) mirror.watchData(id, k, str(call, "server"));
+                }
                 core.subscribe(c, id, str(call, "service"), num(call, "service_n", 0), str(call, "char"), num(call, "char_n", 0),
                         "subscribe".equals(call.route));
                 return;
+            }
             case "rssi":
                 core.rssi(c, id);
                 return;
@@ -293,17 +458,19 @@ public final class BleExtension implements NativeExtension, BleCore.Port {
                 core.services(c);
                 return;
             case "value_set":
-                core.valueSet(c, str(call, "service"), str(call, "char"), num(call, "char_n", 0), str(call, "hex"), str(call, "b64"));
+                core.valueSet(c, str(call, "service"), str(call, "char"), num(call, "char_n", 0), str(call, "hex"), str(call, "b64"),
+                        str(call, "text"));
                 return;
             case "notify":
                 core.notify(c, str(call, "service"), str(call, "char"), num(call, "char_n", 0), str(call, "hex"), str(call, "b64"),
-                        str(call, "central"));
+                        str(call, "central"), str(call, "text"));
                 return;
             case "advertise_start":
                 core.advertiseStart(c, str(call, "services"), str(call, "name"), num(call, "manufacturer_id", -1),
                         str(call, "manufacturer_hex"), str(call, "service_data_uuid"), str(call, "service_data_hex"),
                         flag(call, "connectable", true), call.params.containsKey("mode") ? str(call, "mode") : "balanced",
-                        num(call, "seconds", 0));
+                        num(call, "seconds", 0), str(call, "tx_power"),
+                        call.params.containsKey("include_tx_power") ? flag(call, "include_tx_power", false) : null);
                 return;
             case "advertise_stop":
                 core.advertiseStop(c);
@@ -327,7 +494,21 @@ public final class BleExtension implements NativeExtension, BleCore.Port {
         Map<String, Object> data = BleCore.obj("state", radio.adapterState(),
                 "authorization", missingRuntime("central").isEmpty() && missingInstallTime("central") == null ? "granted" : "not_granted");
         data.putAll(core.stateFields());
+        data.put("server", mirror.status());
         reply(c, true, null, null, data);
+    }
+
+    /** createBond; the system shows its pairing prompt and each change is a {@code bond} event. */
+    private void bond(int c, String id) {
+        String r = radio.bond(id);
+        if (r == null) {
+            reply(c, true, null, null, BleCore.obj("id", id, "state", "bonding"));
+        } else if (r.startsWith("=")) {
+            reply(c, true, null, null, BleCore.obj("id", id, "state", r.substring(1)));
+        } else {
+            int sp = r.indexOf(' ');
+            reply(c, false, sp < 0 ? r : r.substring(0, sp), sp < 0 ? r : r.substring(sp + 1), null);
+        }
     }
 
     // ---- permissions ----------------------------------------------------------------------------
@@ -374,8 +555,14 @@ public final class BleExtension implements NativeExtension, BleCore.Port {
     // ---- BleCore.Port: radio ------------------------------------------------------------------------
 
     @Override
-    public String scanStart(int scan, List<String> services, boolean duplicates, String mode) {
-        return radio.scanStart(scan, services, duplicates, mode);
+    public String scanStart(int scan, List<String> services, boolean duplicates, String mode, Map<String, Object> options) {
+        return radio.scanStart(scan, services, duplicates, mode, options, core.scanNames, core.scanManufacturer,
+                core.scanManufacturerPrefix);
+    }
+
+    @Override
+    public String writable(String id, int gen, boolean withResponse) {
+        return radio.writable(id, gen, withResponse);
     }
 
     @Override
@@ -468,6 +655,11 @@ public final class BleExtension implements NativeExtension, BleCore.Port {
             ctx.emit(event, toJson(data));
         } catch (JSONException e) {
             ctx.log("event " + event + " is not JSON: " + e.getMessage());
+        }
+        mirror.onEvent(event, data, startedActivities == 0);
+        if (!persistPosted) {
+            persistPosted = true;
+            main.postDelayed(this::persistJournal, PERSIST_MS);
         }
     }
 

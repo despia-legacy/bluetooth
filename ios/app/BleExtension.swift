@@ -25,6 +25,11 @@ final class BleExtension: NSObject, NativeExtension, @MainActor BlePort {
     private var nextCall = 0
     private var calls: [Int: Waiting] = [:]
     private var inBackground = false
+    private var mirror: BleServerMirror!
+    /// The disk-durable journal: `ble/journal.jsonl` (this run) and `ble/journal-prev.jsonl`.
+    private var journalFile: URL!
+    private var persistPending = false
+    static let persistMs = 250
 
     private struct Waiting {
         let call: NativeExtCall
@@ -35,13 +40,84 @@ final class BleExtension: NSObject, NativeExtension, @MainActor BlePort {
 
     func didLaunch(_ context: NativeExtContext) {
         ctx = context
-        core = BleCore(port: self, platform: "ios", run: UUID().uuidString)
+        let run = UUID().uuidString
+        core = BleCore(port: self, platform: "ios", run: run)
+        mirror = BleServerMirror(dataDirectory: context.dataDirectory, log: { [weak context] in context?.log($0) })
+        openJournal(run)
         radio = BleCentralRadio(core: core, restoreIdentifier: context.bluetoothRestoreIdentifier("main"))
         server = BlePeripheralRadio(core: core, restoreIdentifier: context.bluetoothRestoreIdentifier("server"),
                                     dataDirectory: context.dataDirectory, log: { [weak context] in context?.log($0) })
         // Both managers watch the same radio; whichever settles tells the core (it ignores a repeat).
         server.onState = { [weak self] state in self?.core.adapter(state) }
         server.launch()
+    }
+
+    /// Launch: the previous process's journal becomes `events?run=<previousRun>`; this run gets a
+    /// fresh file. Reading a file starts no manager.
+    private func openJournal(_ run: String) {
+        let dir = ctx.dataDirectory.appendingPathComponent("ble", isDirectory: true)
+        try? FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+        journalFile = dir.appendingPathComponent("journal.jsonl")
+        let prev = dir.appendingPathComponent("journal-prev.jsonl")
+        if let text = try? String(contentsOf: journalFile, encoding: .utf8) {
+            let lines = text.split(separator: "\n", omittingEmptySubsequences: true)
+            if let head = lines.first, let h = BleExtension.parse(String(head)) as? [String: Any], let prevRun = h["run"] as? String {
+                // A torn last line (the process died mid-write) is skipped; everything before it stands.
+                let records = lines.dropFirst().compactMap { BleExtension.parse(String($0)).map(BleExtension.record) }
+                core.loadPrevious(prevRun, records)
+            }
+            try? FileManager.default.removeItem(at: prev)
+            try? FileManager.default.moveItem(at: journalFile, to: prev)
+        }
+        writeJournal(BleCore.json(BleCore.obj(("run", run))) + "\n", append: false)
+    }
+
+    private static func parse(_ line: String) -> Any? {
+        guard let d = line.data(using: .utf8) else { return nil }
+        return try? JSONSerialization.jsonObject(with: d)
+    }
+
+    /// A journal record from its file form, top-level keys in the journal's own order.
+    private static func record(_ v: Any) -> BleObj {
+        let o = BleObj()
+        guard let d = v as? [String: Any] else { return o }
+        for k in ["seq", "t", "event", "data"] where d[k] != nil { o[k] = value(d[k]!) }
+        for k in d.keys.sorted() where o[k] == nil { o[k] = value(d[k]!) }
+        return o
+    }
+
+    private static func value(_ v: Any) -> Any {
+        if let d = v as? [String: Any] {
+            let o = BleObj()
+            for k in d.keys.sorted() { o[k] = value(d[k]!) }
+            return o
+        }
+        if let l = v as? [Any] { return l.map { value($0) } }
+        return v
+    }
+
+    private func writeJournal(_ text: String, append: Bool) {
+        guard let data = text.data(using: .utf8) else { return }
+        do {
+            if append, let h = try? FileHandle(forWritingTo: journalFile) {
+                defer { try? h.close() }
+                try h.seekToEnd()
+                try h.write(contentsOf: data)
+            } else {
+                try data.write(to: journalFile, options: [.atomic, .completeFileProtectionUntilFirstUserAuthentication])
+            }
+        } catch {
+            ctx.log("journal file: \(error.localizedDescription)")
+        }
+    }
+
+    /// Appends the records since the last call, or rewrites the bounded window (BleCore.journalToPersist).
+    private func persistJournal() {
+        persistPending = false
+        guard let j = core.journalToPersist() else { return }
+        var text = j.rewrite ? BleCore.json(BleCore.obj(("run", core.run))) + "\n" : ""
+        for r in j.records { text += BleCore.json(r) + "\n" }
+        writeJournal(text, append: !j.rewrite)
     }
 
     func restoreBluetoothCentrals(_ identifiers: [String]) {
@@ -61,13 +137,14 @@ final class BleExtension: NSObject, NativeExtension, @MainActor BlePort {
     /// Routes that read the core's own state and never touch the radio.
     private static let local: Set<String> = ["events", "devices", "links", "scan_stop", "disconnect", "services",
                                              "service_remove", "value_set", "advertise_stop", "centrals", "central_drop",
-                                             "keep_alive"]
+                                             "keep_alive", "priority", "phy", "bond", "bonds"]
     private static let radioRoutes: Set<String> = ["scan_start", "connect", "discover", "read", "write", "subscribe",
-                                                   "unsubscribe", "rssi", "mtu"]
+                                                   "unsubscribe", "rssi", "mtu", "raw", "system_devices", "connection_events"]
     /// Routes of the GATT server and the advertiser: they need the peripheral manager.
     private static let serverRoutes: Set<String> = ["service_add", "notify", "advertise_start"]
 
     func handle(_ call: NativeExtCall) async -> NativeExtResult {
+        mirror.pump()
         if call.route == "state" { return await state(call) }
         if BleExtension.local.contains(call.route) { return await run(call) }
         if BleExtension.serverRoutes.contains(call.route) {
@@ -100,6 +177,7 @@ final class BleExtension: NSObject, NativeExtension, @MainActor BlePort {
         let data = BleCore.obj(("state", name),
                                ("authorization", BleCentralRadio.authorizationName(CBManager.authorization)))
         data.putAll(core.stateFields())
+        data["server"] = mirror.status()
         return .ok(data.plain)
     }
 
@@ -120,13 +198,50 @@ final class BleExtension: NSObject, NativeExtension, @MainActor BlePort {
         func flag(_ k: String, _ d: Bool) -> Bool { p[k] as? Bool ?? d }
         func str(_ k: String) -> String? { p[k] as? String }
         switch call.route {
-        case "events": core.events(c, int("after", 0), int("max", 200))
+        case "events": core.events(c, int("after", 0), int("max", 200), run: str("run"))
         case "scan_start":
+            let options = BleObj()
+            for k in BleCore.scanOptionKeys { if let v = p[k] { options[k] = v } }
             core.scanStart(c, str("services"), int("seconds", 0), flag("duplicates", false), str("mode") ?? "balanced",
-                           inBackground)
+                           inBackground, names: str("names"), manufacturerId: int("manufacturer_id", -1),
+                           manufacturerHex: str("manufacturer_hex"), options: options)
         case "scan_stop": core.scanStop(c)
         case "devices": core.devices(c)
-        case "connect": core.connect(c, id, flag("auto", false), int("seconds", 10))
+        case "connect":
+            if let id = id {
+                if let url = str("server") { mirror.watchState(id, url) }
+                _ = radio.setConnectOptions(id, p)
+            }
+            core.connect(c, id, flag("auto", false), int("seconds", 10))
+        case "raw": core.raw(c, id, str("hex"), str("b64"), str("text"), flag("response", true))
+        case "priority": core.priority(c, id, str("level") ?? "balanced")
+        case "phy": core.phy(c, id, str("tx"), str("rx"), str("coded") ?? "none")
+        case "bond", "bonds":
+            reply(c, false, "platform_limit", "iOS has no API to start, list or remove a bond: the system pairs when a "
+                  + "peripheral requires encryption for an attribute the app reads or writes (CoreBluetooth)", nil)
+        case "system_devices":
+            guard let list = BleCore.uuidList(str("services")), !list.isEmpty else {
+                reply(c, false, "bad_value", "iOS lists system-connected peripherals by service: give services (1 to 20 UUIDs)", nil)
+                return
+            }
+            if let devices = radio.systemDevices(list) {
+                reply(c, true, nil, nil, BleCore.obj(("devices", devices)))
+            } else {
+                reply(c, false, "unavailable", "Bluetooth is \(radio.stateName)", nil)
+            }
+        case "connection_events":
+            guard let list = BleCore.uuidList(str("services")) else {
+                reply(c, false, "bad_value", "services must be up to 20 UUIDs", nil)
+                return
+            }
+            let ids = (str("ids") ?? "").split(separator: ",").map(String.init)
+            if let err = radio.connectionEvents(list, ids) {
+                let sp = err.firstIndex(of: " ") ?? err.endIndex
+                reply(c, false, String(err[..<sp]), sp < err.endIndex ? String(err[err.index(after: sp)...]) : err, nil)
+            } else {
+                reply(c, true, nil, nil, BleCore.obj(("services", list as [Any]), ("ids", ids as [Any]),
+                                                 ("applied", BleCore.obj(("services", true), ("ids", true)))))
+            }
         case "disconnect": core.disconnect(c, id)
         case "links": core.links(c)
         case "discover": core.discover(c, id)
@@ -134,8 +249,13 @@ final class BleExtension: NSObject, NativeExtension, @MainActor BlePort {
             core.read(c, id, str("service"), int("service_n", 0), str("char"), int("char_n", 0), str("descriptor"))
         case "write":
             core.write(c, id, str("service"), int("service_n", 0), str("char"), int("char_n", 0), str("descriptor"),
-                       str("hex"), str("b64"), flag("response", true))
+                       str("hex"), str("b64"), flag("response", true), text: str("text"))
         case "subscribe", "unsubscribe":
+            if let id = id, let su = BleCore.uuid(str("service")), let cu = BleCore.uuid(str("char")) {
+                let k = BleCore.key(su, int("service_n", 0), cu, int("char_n", 0))
+                if call.route == "unsubscribe" { mirror.unwatchData(id, k) }
+                else if let url = str("server") { mirror.watchData(id, k, url) }
+            }
             core.subscribe(c, id, str("service"), int("service_n", 0), str("char"), int("char_n", 0),
                            call.route == "subscribe")
         case "rssi": core.rssi(c, id)
@@ -143,13 +263,16 @@ final class BleExtension: NSObject, NativeExtension, @MainActor BlePort {
         case "service_add": core.serviceAdd(c, str("uuid"), flag("primary", true), str("chars"))
         case "service_remove": core.serviceRemove(c, str("uuid"))
         case "services": core.servicesList(c)
-        case "value_set": core.valueSet(c, str("service"), str("char"), int("char_n", 0), str("hex"), str("b64"))
+        case "value_set":
+            core.valueSet(c, str("service"), str("char"), int("char_n", 0), str("hex"), str("b64"), text: str("text"))
         case "notify":
-            core.notify(c, str("service"), str("char"), int("char_n", 0), str("hex"), str("b64"), str("central"))
+            core.notify(c, str("service"), str("char"), int("char_n", 0), str("hex"), str("b64"), str("central"),
+                        text: str("text"))
         case "advertise_start":
             core.advertiseStart(c, str("services"), str("name"), int("manufacturer_id", -1), str("manufacturer_hex"),
                                 str("service_data_uuid"), str("service_data_hex"), flag("connectable", true),
-                                str("mode") ?? "balanced", int("seconds", 0))
+                                str("mode") ?? "balanced", int("seconds", 0), txPower: str("tx_power"),
+                                includeTxPower: p["include_tx_power"] as? Bool)
         case "advertise_stop": core.advertiseStop(c)
         case "centrals": core.centrals(c)
         case "central_drop": core.centralDrop(c, str("central"))
@@ -160,9 +283,11 @@ final class BleExtension: NSObject, NativeExtension, @MainActor BlePort {
 
     // MARK: BlePort: radio
 
-    func scanStart(_ scan: Int, _ services: [String], _ duplicates: Bool, _ mode: String) -> String? {
-        radio.scanStart(scan, services, duplicates, mode)
+    func scanStart(_ scan: Int, _ services: [String], _ duplicates: Bool, _ mode: String, _ options: BleObj) -> String? {
+        radio.scanStart(scan, services, duplicates, mode, options)
     }
+
+    func writable(_ id: String, _ gen: Int, _ withResponse: Bool) -> String? { radio.writable(id, gen, withResponse) }
 
     func scanStop(_ scan: Int) { radio.scanStop(scan) }
 
@@ -221,7 +346,17 @@ final class BleExtension: NSObject, NativeExtension, @MainActor BlePort {
         w.continuation.resume(returning: ok ? .ok(data?.plain ?? [:]) : .error(code: code ?? "handler_error", message: message ?? ""))
     }
 
-    func emit(_ event: String, _ data: BleObj) { ctx.emit(event, data.plain) }
+    func emit(_ event: String, _ data: BleObj) {
+        ctx.emit(event, data.plain)
+        mirror.onEvent(event, data, background: inBackground)
+        if !persistPending {
+            persistPending = true
+            Task { @MainActor [weak self] in
+                try? await Task.sleep(nanoseconds: UInt64(BleExtension.persistMs) * 1_000_000)
+                self?.persistJournal()
+            }
+        }
+    }
 
     func isActive(_ call: Int) -> Bool { calls[call]?.call.isActive ?? false }
 

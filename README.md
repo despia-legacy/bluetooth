@@ -6,7 +6,7 @@ Bluetooth Low Energy as central and peripheral on iOS and Android.
 
 This ready-made extension is part of Despia V3 Extensions. First-party V4 support comes through the new package registry, with a different package shape.
 
-Bluetooth central support is pending device validation.
+Bluetooth central and peripheral support is pending validation on physical devices. Route answers for state, permission and an unavailable radio are proven in the iOS simulator and the Android emulator; neither has a Bluetooth radio.
 
 [V3 extension documentation](https://setup.despia.com/experiments/v3-extensions) and [extension skill](https://github.com/despia-legacy/extension-skill).
 
@@ -76,8 +76,10 @@ Standard error codes: `bad_request` (an undeclared or missing parameter, or a va
 
 This extension gives your web app Bluetooth Low Energy operations on iOS (CoreBluetooth) and Android (`android.bluetooth`), in both roles:
 
-- **Central:** scan, connect, discover services, read, write, subscribe to notifications, read RSSI and set the MTU.
+- **Central:** scan with service, name and manufacturer filters, connect, discover services, read and write characteristics and descriptors (with and without response), subscribe to notifications and indications, read RSSI, set the MTU, set the connection priority and the PHY, bond, list bonded and system-connected devices, and watch connections the system makes.
 - **Peripheral:** publish your own GATT services, answer reads from a value store, receive writes, send notifications, and advertise.
+- **Server posts:** `connect` and `subscribe` can post every link change and every notified value to your HTTPS server, in every app state, from a queue that survives a restart.
+- **Journal:** every event is kept on disk, so a page reads what happened while it was not loaded, including during the previous launch.
 
 Bytes cross the bridge as lower-case `hex` (or `b64` in parameters). No native object ever reaches the page.
 
@@ -86,6 +88,8 @@ Bytes cross the bridge as lower-case `hex` (or `b64` in parameters). No native o
 ## Values to set before you build
 
 Despia takes app identity from the existing build configuration. `public/` is the folder your site serves from its root (in SvelteKit, write `static/`). The paths must stay as written, because the manifest names them. Signed build verification checks the exact files included in the native build.
+
+Replace the placeholder host `api.example.com` in the `server` parameters of `connect` and `subscribe` in `manifest.json` with the host of the server that receives the posts, or remove those two `server` parameters if you do not use them. A URL on any other host is refused with `bad_request`.
 
 Supply `NSBluetoothAlwaysUsageDescription` with text explaining your app's Bluetooth use. Use the app's existing purpose-description configuration, or, with the upcoming runtime, add a nonempty string under `ios.app.info_plist` and set `ios.app.custom_keys` to `true`. Existing nonempty app-configured text takes priority. Ensure the final Android manifest declares the permissions required below. These declarations do not grant runtime access: the user decides when Android presents the permission request. The Bluetooth background modes come from the manifest. The Android module declares the two AndroidX dependencies listed below. The app's dependency build verification must include their resolved versions.
 
@@ -241,9 +245,9 @@ if (!advertising.ok) throw new Error(advertising.code + ': ' + advertising.error
 console.log(advertising.data.applied);
 ```
 
-### Missed events
+### Missed events and the previous launch
 
-Every event is also kept in a journal of up to 2000 records, each with a `seq`. A page that was not loaded when something happened reads it back:
+Every event is also kept in a journal of up to 2000 records, each with a `seq`. The journal is written to the app's data directory within 250 ms of each event. A page that was not loaded when something happened reads it back:
 
 ```javascript
 import despia from 'despia-native';
@@ -258,7 +262,25 @@ for (const record of journal.data.records) console.log(record);
 after = journal.data.next;
 ```
 
+Each launch is a run. `state` answers `run` (this launch) and `previousRun` (the launch before, or `null`). Pass `run` with the previous run's name to `events` to read what that launch recorded, for example notifications that arrived just before the system ended the app.
+
 Ask for Bluetooth first: call `state` with `prompt=true` before the first scan, connect or server route, so the system prompt is answered before anything waits on it. A route that waited too long answers `timeout` and started nothing. Call it again. A `connect` to a device that is already connecting (for example one iOS brought back after your app relaunched) joins that attempt and resolves with its result.
+
+### Posting to your server
+
+Pass `server` (an HTTPS URL on a host the manifest allows) to `connect` and every link change of that device is posted as JSON:
+
+```json
+{"event": "ble_state", "deviceId": "...", "state": "connected", "timestamp": 1764000000.5, "background": true, "battery": 81}
+```
+
+A failed link adds `error` (the platform's message); a link that ended adds `reason`. Pass `server` to `subscribe` and every notified value of that characteristic is posted:
+
+```json
+{"event": "ble_data", "deviceId": "...", "service": "...", "characteristic": "...", "value": "AQI=", "valueHex": "0102", "timestamp": 1764000000.5, "background": false, "battery": 81}
+```
+
+`battery` is 0 to 100, or -1 when the system does not report it. Posts are sent one at a time, with a 15 second timeout and no redirects. A post that fails is retried after 30 seconds. Up to 500 posts wait in a queue in the app's data directory; when it is full, the oldest is dropped and counted. `state` answers `server` with `servers`, `pending` and `dropped`. A `disconnect` posts the last state and then stops watching that device. `unsubscribe` stops the posts for that characteristic.
 
 ### Routes
 
@@ -266,20 +288,36 @@ Ask for Bluetooth first: call `state` with `prompt=true` before the first scan, 
 
 | Route         | Parameters                                                                              | Answer `data`                                    | Answer variable | Callback |
 | ------------- | --------------------------------------------------------------------------------------- | ------------------------------------------------ | --- | --- |
-| `state`       | `prompt`                                                                                | `state`, `authorization`, `scanning`, `advertising`, `links`, `centrals`, `keepAlive`, `epoch`, `run` | `bleState` | `onBleState` |
-| `events`      | `after` (0 or more), `max` (1 to 200)                                                   | `records`, `next`, `dropped`, `run`              | `bleEvents` | `onBleEvents` |
-| `scan_start`  | `services` (comma-separated, up to 20), `seconds` (0 to 3600, 0 until `scan_stop`), `duplicates`, `mode` | `scan`                          | `bleScanStart` | `onBleScanStart` |
+| `state`       | `prompt`                                                                                | `state`, `authorization`, `scanning`, `advertising`, `links`, `centrals`, `keepAlive`, `epoch`, `run`, `previousRun`, `server` | `bleState` | `onBleState` |
+| `events`      | `after` (0 or more), `max` (1 to 200), `run`                                            | `records`, `next`, `dropped`, `run`              | `bleEvents` | `onBleEvents` |
+| `scan_start`  | `services` (comma-separated, up to 20), `names` (comma-separated, up to 10), `manufacturer_id` (0 to 65535) with optional `manufacturer_hex` (a data prefix), `seconds` (0 to 3600, 0 until `scan_stop`), `duplicates`, `mode`, and the scan options below | `scan`, `applied` | `bleScanStart` | `onBleScanStart` |
 | `scan_stop`   | none                                                                                    | `scan`, `stopped`                                | `bleScanStop` | `onBleScanStop` |
 | `devices`     | none                                                                                    | `devices` (up to 200)                            | `bleDevices` | `onBleDevices` |
-| `connect`     | `id` (required), `auto`, `seconds` (1 to 20, default 10)                                 | `id`, `link`, `state`, `mtu`                     | `bleConnect` | `onBleConnect` |
+| `connect`     | `id` (required), `auto`, `seconds` (0 to 20, default 10; 0 answers at once and waits with no limit), `server`, and the iOS connect options below | `id`, `link`, `state`, `mtu` | `bleConnect` | `onBleConnect` |
 | `disconnect`  | `id` (required)                                                                         | `id`, `state`, `confirmed`                       | `bleDisconnect` | `onBleDisconnect` |
 | `links`       | none                                                                                    | `links`                                          | `bleLinks` | `onBleLinks` |
 | `discover`    | `id` (required)                                                                         | `id`, `services`                                 | `bleDiscover` | `onBleDiscover` |
 | `read`        | `id`, `service`, `char` (required), `service_n`, `char_n`, `descriptor`                  | `hex`                                            | `bleRead` | `onBleRead` |
-| `write`       | as `read`, plus `hex` or `b64`, `response` (default `true`)                              | `written`, `chunks`                              | `bleWrite` | `onBleWrite` |
-| `subscribe`, `unsubscribe` | `id`, `service`, `char` (required), `service_n`, `char_n`                  | `subscribed`, `mode`                             | `bleSubscribe`, `bleUnsubscribe` | `onBleSubscribe`, `onBleUnsubscribe` |
+| `write`       | as `read`, plus one of `hex`, `b64` or `text` (UTF-8), `response` (default `true`)       | `written`, `chunks`                              | `bleWrite` | `onBleWrite` |
+| `raw`         | `id` (required), one of `hex`, `b64` or `text`, `response` (default `true`)             | `written`, `chunks`, `service`, `char`, `service_n`, `char_n`, `response` | `bleRaw` | `onBleRaw` |
+| `subscribe`   | `id`, `service`, `char` (required), `service_n`, `char_n`, `server`                     | `subscribed`, `mode`                             | `bleSubscribe` | `onBleSubscribe` |
+| `unsubscribe` | `id`, `service`, `char` (required), `service_n`, `char_n`                               | `subscribed`, `mode`                             | `bleUnsubscribe` | `onBleUnsubscribe` |
 | `rssi`        | `id` (required)                                                                         | `rssi`                                           | `bleRssi` | `onBleRssi` |
 | `mtu`         | `id` (required), `size` (23 to 517)                                                     | `mtu`, `writeMax`, `writeNoResponseMax`, `requested` | `bleMtu` | `onBleMtu` |
+| `priority`    | `id` (required), `level`: `balanced` (default), `high`, `low_power`, `dck`               | `level`                                          | `blePriority` | `onBlePriority` |
+| `phy`         | `id` (required); without `tx` and `rx` it reads the PHY; `tx`, `rx` (comma-separated `1m`, `2m`, `coded`), `coded` (`none`, `s2`, `s8`) | `tx`, `rx` | `blePhy` | `onBlePhy` |
+| `bond`        | `id` (required)                                                                         | `id`, `state`                                    | `bleBond` | `onBleBond` |
+| `bonds`       | none                                                                                    | `devices` (`id`, `name`, `type`, `bond`)          | `bleBonds` | `onBleBonds` |
+| `system_devices` | `services` (required on iOS)                                                         | `devices`                                        | `bleSystemDevices` | `onBleSystemDevices` |
+| `connection_events` | `services`, `ids` (comma-separated device ids)                                    | `services`, `ids`, `applied`                     | `bleConnectionEvents` | `onBleConnectionEvents` |
+
+`bond` answers `bonding` (or the current state when the device is already bonded) and the `bond` event reports the result.
+
+`raw` writes to the first discovered characteristic that takes the write type, as the retired core did, and names it in the answer. Call `discover` first.
+
+Scan options of `scan_start`: `mode` also takes `opportunistic` (Android: results only from other apps' scans); `legacy` and `phy` (`1m`, `coded`, `all`) for extended advertising; `report_delay` (0 to 600000 ms, batched results); `callback_type` (`all`, `first_match`, `first_match_lost`; a lost device arrives in `device` with `lost: true`); `match` (`aggressive`, `sticky`); `matches` (`one`, `few`, `max`); `solicited` (service UUIDs the peripheral solicits). An option this platform has no API for is ignored and reported `false` in `applied`; an unknown option answers `bad_value`.
+
+iOS connect options of `connect`: `notify_on_connection`, `notify_on_disconnection` and `notify_on_notification` (the system alerts while the app is suspended), `transport_bridging`, `requires_ancs`, and `system_reconnect` (iOS 17: the system reconnects the peripheral after the link drops). Android has no such options; they are ignored there.
 
 **Peripheral**
 
@@ -288,32 +326,36 @@ Ask for Bluetooth first: call `state` with `prompt=true` before the first scan, 
 | `service_add`     | `uuid` (required), `primary` (default `true`), `chars`                         | `uuid`, `characteristics`           | `bleServiceAdd` | `onBleServiceAdd` |
 | `service_remove`  | `uuid`; without it, every service                                              | `removed`                           | `bleServiceRemove` | `onBleServiceRemove` |
 | `services`        | none                                                                           | `services`, `advertising`           | `bleServices` | `onBleServices` |
-| `value_set`       | `service`, `char` (required), `char_n`, `hex` or `b64` (up to 512 bytes)        | `bytes`                             | `bleValueSet` | `onBleValueSet` |
+| `value_set`       | `service`, `char` (required), `char_n`, one of `hex`, `b64` or `text` (up to 512 bytes) | `bytes`                    | `bleValueSet` | `onBleValueSet` |
 | `notify`          | as `value_set`, plus `central` (one central; without it, every subscribed one) | `sent`, `subscribers`               | `bleNotify` | `onBleNotify` |
-| `advertise_start` | `services`, `name` (up to 26), `manufacturer_id` with `manufacturer_hex`, `service_data_uuid` with `service_data_hex`, `connectable` (default `true`), `mode`, `seconds` (0 to 3600) | `advertising`, `applied` | `bleAdvertiseStart` | `onBleAdvertiseStart` |
+| `advertise_start` | `services`, `name` (up to 26), `manufacturer_id` with `manufacturer_hex`, `service_data_uuid` with `service_data_hex`, `connectable` (default `true`), `mode`, `seconds` (0 to 3600), `tx_power` (`ultra_low`, `low`, `medium`, `high`), `include_tx_power` | `advertising`, `applied` | `bleAdvertiseStart` | `onBleAdvertiseStart` |
 | `advertise_stop`  | none                                                                           | `advertising`                       | `bleAdvertiseStop` | `onBleAdvertiseStop` |
 | `centrals`        | none                                                                           | `centrals`                          | `bleCentrals` | `onBleCentrals` |
 | `central_drop`    | `central` (required)                                                           | `dropped`                           | `bleCentralDrop` | `onBleCentralDrop` |
 | `keep_alive`      | `enabled` (required)                                                           | `enabled`, `active`, `reason`       | `bleKeepAlive` | `onBleKeepAlive` |
 
-`mode` is `low_power`, `balanced` or `low_latency`. A device `id` is the iOS peripheral identifier or the Android MAC address. UUIDs can be 16, 32 or 128 bit in any case; answers always use lower-case 128-bit. `service_n` and `char_n` number equal UUIDs in discovery order.
+`mode` is `low_power`, `balanced` or `low_latency`. A device `id` is the iOS peripheral identifier or the Android MAC address. UUIDs can be 16, 32 or 128 bit in any case; answers always use lower-case 128-bit. `service_n` and `char_n` number equal UUIDs in discovery order. Notifications and indications are both handled by `subscribe`; the answer's `mode` says which the characteristic uses.
 
 ### Events
 
-| Event           | Callback            | Scope      | When                                                         |
-| --------------- | ------------------- | ---------- | ------------------------------------------------------------ |
-| `adapter`       | `onBleAdapter`      | `app`      | Bluetooth turned on or off                                   |
-| `restored`      | `onBleRestored`     | `app`      | iOS restored the Bluetooth state after a relaunch            |
-| `device`        | `onBleDevice`       | `document` | Devices found by a scan, batched every 50 ms                 |
-| `scan_end`      | `onBleScanEnd`      | `document` | A scan ended                                                 |
-| `link`          | `onBleLink`         | `document` | A link connected, is reconnecting, or disconnected           |
-| `value`         | `onBleValue`        | `document` | Notified values, batched every 50 ms                         |
-| `gatt_changed`  | `onBleGattChanged`  | `document` | A device changed its services                                |
-| `central`       | `onBleCentral`      | `document` | A central connected, disconnected, subscribed or unsubscribed |
-| `request`       | `onBleRequest`      | `document` | Writes from centrals, batched                                |
-| `advertise_end` | `onBleAdvertiseEnd` | `document` | Advertising stopped, elapsed, lost the adapter, or failed    |
+| Event              | Callback               | Scope      | When                                                         |
+| ------------------ | ---------------------- | ---------- | ------------------------------------------------------------ |
+| `adapter`          | `onBleAdapter`         | `app`      | Bluetooth turned on or off                                   |
+| `restored`         | `onBleRestored`        | `app`      | iOS restored the Bluetooth state after a relaunch            |
+| `device`           | `onBleDevice`          | `document` | Devices found by a scan, batched every 50 ms                 |
+| `scan_end`         | `onBleScanEnd`         | `document` | A scan ended                                                 |
+| `link`             | `onBleLink`            | `document` | A link connected, is reconnecting, or disconnected           |
+| `value`            | `onBleValue`           | `document` | Notified or indicated values, batched every 50 ms            |
+| `gatt_changed`     | `onBleGattChanged`     | `document` | A device changed its services                                |
+| `central`          | `onBleCentral`         | `document` | A central connected, disconnected, subscribed or unsubscribed |
+| `request`          | `onBleRequest`         | `document` | Writes from centrals, batched                                |
+| `advertise_end`    | `onBleAdvertiseEnd`    | `document` | Advertising stopped, elapsed, lost the adapter, or failed    |
+| `bond`             | `onBleBond`            | `document` | A bond changed (`id`, `state`, `previous`), on Android       |
+| `phy`              | `onBlePhy`             | `document` | The link's PHY changed (`id`, `link`, `tx`, `rx`), on Android |
+| `connection_event` | `onBleConnectionEvent` | `document` | A watched device connected to or disconnected from the system, for any app (`id`, `event`, `name`) |
+| `ancs`             | `onBleAncs`            | `document` | A peripheral's notification-center authorization changed (`id`, `authorized`), on iOS |
 
-`restored` carries `peripherals` and `scanning` for the central role, and `services`, `advertising` and `lost` for the server role. Every event is also a journal record, so a page that was not loaded when it happened reads it with `events`. `device` and `value` are batched every 50 ms.
+`restored` carries `peripherals` and `scanning` for the central role, and `services`, `advertising` and `lost` for the server role. Every event is also a journal record, so a page that was not loaded when it happened reads it with `events`.
 
 ### Error codes
 
@@ -323,12 +365,45 @@ Besides the standard codes: `busy`, `unavailable`, `permission_denied`, `scan_fa
 
 ---
 
+## From the retired `bluetooth://` core
+
+The Despia V3 runtime had a built-in `bluetooth://` scheme on iOS only. It has been removed from the runtime; this extension covers all of it on iOS and Android.
+
+| `bluetooth://` | This extension |
+| --- | --- |
+| `state` | `state` (`authorization` and the `adapter` event) |
+| `window.bluetoothActive` | `state` answers `authorization` |
+| `scan?services&duration` | `scan_start?services&seconds` |
+| `stopscan` | `scan_stop` |
+| `connect?id&timeout&auto_connect&server` | `connect?id&seconds&auto&server` (`seconds=0`: no time limit, as before) |
+| `disconnect` | `disconnect` |
+| `discover` | `discover` |
+| `read` | `read` |
+| `write` with `text`, `hex` or `value` | `write` with `text`, `hex` or `b64` |
+| `raw` | `raw` |
+| `subscribe?server`, `unsubscribe` | `subscribe?server`, `unsubscribe` |
+| `rssi` | `rssi` |
+| Server posts `ble_state` and `ble_data` | The same bodies, with a retry queue that survives a restart |
+| Replay queue of 500 events across termination | The journal (2000 records), and `events?run=` for the previous launch |
+| Events `device`, `scanEnd`, `connect`, `discovered`, `data`, `writeComplete`, `rssi`, `state`, `raw` | `device`, `scan_end`, `link`, `value`, `adapter`, and each route's answer |
+
+---
+
 ## Platform limits
 
-- **iOS.** No scan `mode` and no MTU request (`mtu` answers `requested: false`). No API to drop a central (`central_drop` answers `platform_limit`). An advertisement carries only service UUIDs and a local name, is always connectable, and in the background carries no name. In the background, a scan without a service filter is stopped, and a new one answers `filter_required`.
+Each limit below is a capability the platform has no public API for. The route answers `platform_limit` and names it, or the answer's `applied` reports the option `false`. Sources were read on 2026-11-24.
+
+- **iOS, connection priority and PHY.** CoreBluetooth has no API to request a connection interval or read or set the LE PHY; the system and the peripheral choose them. `priority` and `phy` answer `platform_limit`. Source: [CBPeripheral](https://developer.apple.com/documentation/corebluetooth/cbperipheral).
+- **iOS, bonding.** No API to start, list or remove a bond. The system pairs when a peripheral requires encryption for an attribute the app reads or writes. `bond` and `bonds` answer `platform_limit`. Source: [CBPeripheral](https://developer.apple.com/documentation/corebluetooth/cbperipheral) and [CBCentralManager](https://developer.apple.com/documentation/corebluetooth/cbcentralmanager), which have no bonding API.
+- **iOS, scanning and advertising.** No scan `mode`, `report_delay`, `callback_type`, `match`, `matches`, `legacy` or `phy`, no name or manufacturer filter in the scan itself (the extension filters the results), and no MTU request (`mtu` answers `requested: false`). No API to drop a central (`central_drop` answers `platform_limit`). An advertisement carries only service UUIDs and a local name, is always connectable, has no TX power setting, and in the background carries no name. In the background, a scan without a service filter is stopped, and a new one answers `filter_required`. `system_devices` needs `services`. Sources: [CBCentralManager](https://developer.apple.com/documentation/corebluetooth/cbcentralmanager), [CBPeripheralManager.startAdvertising](https://developer.apple.com/documentation/corebluetooth/cbperipheralmanager/startadvertising(_:)).
 - **iOS, reads.** A characteristic value and a read answer arrive through the same callback, so a notification that lands while a read of the same characteristic is in flight answers that read.
-- **Android.** No state restoration: links, the server and advertising end with the app's process. Use `keep_alive` to keep links while the app is in the background. With `name`, Android advertises the device's own Bluetooth name. A controller without advertising support answers `platform_limit`.
+- **Android, versions.** `legacy` and `phy` in a scan and the `phy` route need Android 8.0 (API 26). `priority` with `dck` needs Android 14 (API 34). Earlier versions answer `platform_limit`. `requestConnectionPriority` has no completion callback, so `priority` answers once the system accepts the request. Source: [BluetoothGatt](https://developer.android.com/reference/android/bluetooth/BluetoothGatt).
+- **Android, connection events.** `connection_event` comes from the system's ACL broadcasts, which carry the device but no service list: `ids` filter, `services` cannot (`applied.services` is `false`). Classic Bluetooth links appear too. Source: [BluetoothDevice.ACTION_ACL_CONNECTED](https://developer.android.com/reference/android/bluetooth/BluetoothDevice#ACTION_ACL_CONNECTED).
+- **Android, bonds.** No public API removes a bond; the user removes it in the system Bluetooth settings. Source: [BluetoothDevice](https://developer.android.com/reference/android/bluetooth/BluetoothDevice) (public `createBond` only).
+- **Android, other.** No state restoration: links, the server and advertising end with the app's process. Use `keep_alive` to keep links while the app is in the background. With `name`, Android advertises the device's own Bluetooth name. A controller without advertising support answers `platform_limit`. The iOS connect options do not exist.
 - **Both.** One GATT operation runs at a time per link, up to 64 wait, and each has a 10 second timeout that closes the link. Writes are at most 512 bytes. A write without response means the bytes were handed to the system, not that they were delivered.
+
+Not in this version: answering a central's read or write from the page (reads answer from the value store, writes are accepted and arrive in `request`), L2CAP channels, and Android extended advertising sets.
 
 ## License
 

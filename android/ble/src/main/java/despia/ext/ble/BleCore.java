@@ -29,8 +29,12 @@ public final class BleCore {
 
     /** What the core asks of the platform side. Implemented by the radio adapter and by test fakes. */
     public interface Port {
-        /** Start a scan. Returns null when the platform accepted it, else "code message". */
-        String scanStart(int scan, List<String> services, boolean duplicates, String mode);
+        /**
+         * Start a scan. {@code options}: the scan options the page gave beyond services, duplicates and
+         * mode (keys as {@link #SCAN_OPTION_KEYS}); the radio applies what its platform offers.
+         * Returns null when the platform accepted it, else "code message".
+         */
+        String scanStart(int scan, List<String> services, boolean duplicates, String mode, Map<String, Object> options);
 
         void scanStop(int scan);
 
@@ -49,6 +53,12 @@ public final class BleCore {
          * the platform accepted it, else "code message" (the step settles at once).
          */
         String op(String id, int gen, int op, String kind, String key, String descriptor, byte[] data, int arg);
+
+        /**
+         * The key of the first discovered characteristic of link {@code gen} that takes a write with
+         * response ({@code withResponse}) or without one; null when none (the {@code raw} route).
+         */
+        String writable(String id, int gen, boolean withResponse);
 
         void timer(String kind, int token, long ms);
 
@@ -125,6 +135,14 @@ public final class BleCore {
     public int dropped;
     final List<Map<String, Object>> pendingValues = new ArrayList<>();
     boolean flushScheduled;
+    /** The disk-durable journal: the last seq handed out, records written since the last rewrite. */
+    int persistedSeq, persistedSinceRewrite;
+    /** The journal of the previous app process, read back from disk at launch. */
+    String previousRun;
+    List<Map<String, Object>> previousRecords = new ArrayList<>();
+    int previousDropped;
+    /** The last port refusal of a connect no call owned: code and message. */
+    String[] lastRefusal = {"connect_failed", ""};
 
     static final class Link {
         final String id;
@@ -134,6 +152,11 @@ public final class BleCore {
         boolean background;
         int mtu = 23;
         int connectCall = -1;
+        /**
+         * A page {@code connect} with {@code seconds} 0: the attempt waits for the device without a time
+         * limit (the route answered at once with {@code connecting}).
+         */
+        boolean unbounded;
         /** The token of the timer bounding an attempt no fresh connect started (restored or adopted). */
         int pendingTimer;
         boolean closed;
@@ -159,6 +182,8 @@ public final class BleCore {
         int arg;
         int chunk, chunks;
         boolean internal;
+        /** The {@code raw} route: the reply names the characteristic the radio chose. */
+        boolean raw;
 
         Op(int call, String kind) {
             this.call = call;
@@ -315,8 +340,41 @@ public final class BleCore {
 
     /** Exactly one of hex and b64 decoded; null when none, both, or malformed. */
     public static byte[] bytes(String hex, String b64) {
-        if ((hex == null) == (b64 == null)) return null;
+        return bytes(hex, b64, null);
+    }
+
+    /** Exactly one of hex, b64 and text (UTF-8) decoded; null when none, more than one, or malformed. */
+    public static byte[] bytes(String hex, String b64, String text) {
+        int given = (hex != null ? 1 : 0) + (b64 != null ? 1 : 0) + (text != null ? 1 : 0);
+        if (given != 1) return null;
+        if (text != null) return text.getBytes(java.nio.charset.StandardCharsets.UTF_8);
         return hex != null ? fromHex(hex) : fromB64(b64);
+    }
+
+    /**
+     * Comma-separated names (each 1 to 248 UTF-8 bytes, the GAP name limit), at most 10; empty when
+     * missing; null when malformed.
+     */
+    public static List<String> nameList(String s) {
+        List<String> out = new ArrayList<>();
+        if (s == null || s.isEmpty()) return out;
+        for (String n : s.split(",", -1)) {
+            int len = n.getBytes(java.nio.charset.StandardCharsets.UTF_8).length;
+            if (len == 0 || len > 248) return null;
+            if (!out.contains(n)) out.add(n);
+        }
+        return out.size() > 10 ? null : out;
+    }
+
+    /** PHY names of the {@code phy} route (1m, 2m, coded), comma-separated; null when malformed or empty. */
+    public static List<String> phyList(String s) {
+        if (s == null || s.isEmpty()) return null;
+        List<String> out = new ArrayList<>();
+        for (String p : s.split(",", -1)) {
+            if (!"1m".equals(p) && !"2m".equals(p) && !"coded".equals(p)) return null;
+            if (!out.contains(p)) out.add(p);
+        }
+        return out;
     }
 
     /** The characteristic key used in replies, records and subscriptions. */
@@ -500,6 +558,43 @@ public final class BleCore {
         }
     }
 
+    private static Map<String, Object> journalRecord(Map<String, Object> r) {
+        return obj("seq", r.get("seq"), "t", r.get("t"), "event", r.get("event"), "data", r.get("data"));
+    }
+
+    /**
+     * The disk-durable journal, asked by the extension on its own timer after events: the records
+     * ({seq, t, event, data}) to append to this run's file since the last call, or, once the file holds
+     * twice the window's record count, the whole window to replace it with ({@code rewrite}), so the
+     * file stays bounded. Null when there is nothing new. Element 0: the records; element 1: rewrite.
+     */
+    public Object[] journalToPersist() {
+        List<Map<String, Object>> out = new ArrayList<>();
+        boolean rewrite = false;
+        if (persistedSinceRewrite >= JOURNAL_RECORDS * 2) {
+            rewrite = true;
+            for (Map<String, Object> r : journal) out.add(journalRecord(r));
+            persistedSinceRewrite = out.size();
+        } else {
+            for (Map<String, Object> r : journal) {
+                if ((Integer) r.get("seq") > persistedSeq) out.add(journalRecord(r));
+            }
+            persistedSinceRewrite += out.size();
+        }
+        if (!journal.isEmpty()) persistedSeq = (Integer) journal.peekLast().get("seq");
+        return out.isEmpty() && !rewrite ? null : new Object[]{out, rewrite};
+    }
+
+    /**
+     * Launch: the previous process's journal as its file held it (records {seq, t, event, data},
+     * oldest first). Only the newest JOURNAL_RECORDS are kept; {@code events} with {@code run} reads them.
+     */
+    public void loadPrevious(String run, List<Map<String, Object>> records) {
+        previousRun = run;
+        previousDropped = Math.max(0, records.size() - JOURNAL_RECORDS);
+        previousRecords = new ArrayList<>(records.subList(previousDropped, records.size()));
+    }
+
     /** An event that is also a journal record. */
     private void record(String event, Map<String, Object> data) {
         append(event, data);
@@ -583,16 +678,67 @@ public final class BleCore {
     /** Fields of the state reply that the core owns. */
     public Map<String, Object> stateFields() {
         return obj("scanning", scan != 0, "advertising", advertising, "links", links.size(), "centrals", centrals.size(),
-                "keepAlive", keepAliveWanted, "epoch", epoch, "run", run);
+                "keepAlive", keepAliveWanted, "epoch", epoch, "run", run, "previousRun", previousRun);
     }
 
     // ---- scan -----------------------------------------------------------------------------------
 
+    /** The scan options passed through to the radio, by route parameter name. */
+    public static final List<String> SCAN_OPTION_KEYS =
+            java.util.Arrays.asList("legacy", "phy", "report_delay", "callback_type", "match", "matches", "solicited");
+
+    /** The scan's own filters, applied here on every platform: advertised names, and a manufacturer id with a data prefix. */
+    List<String> scanNames = new ArrayList<>();
+    int scanManufacturer = -1;
+    byte[] scanManufacturerPrefix = new byte[0];
+
+    /**
+     * What this platform applies of the given scan options: Android's ScanSettings (legacy, phy,
+     * report_delay, callback, match, matches); iOS's solicited service UUIDs. Names and the
+     * manufacturer filter are the core's own, so they apply on both.
+     */
+    Map<String, Object> scanApplied(Map<String, Object> options, boolean names, boolean manufacturer) {
+        Map<String, Object> out = obj();
+        if (names) out.put("names", true);
+        if (manufacturer) out.put("manufacturer", true);
+        for (String k : options.keySet()) out.put(k, "solicited".equals(k) ? !android : android);
+        return out;
+    }
+
     public void scanStart(int call, String servicesCsv, int seconds, boolean duplicates, String mode, boolean background) {
+        scanStart(call, servicesCsv, seconds, duplicates, mode, background, null, -1, null, obj());
+    }
+
+    public void scanStart(int call, String servicesCsv, int seconds, boolean duplicates, String mode, boolean background,
+                          String namesCsv, int manufacturerId, String manufacturerHex, Map<String, Object> options) {
         List<String> services = uuidList(servicesCsv);
         if (services == null) {
             fail(call, "bad_value", "services must be up to 20 UUIDs");
             return;
+        }
+        List<String> names = nameList(namesCsv);
+        if (names == null) {
+            fail(call, "bad_value", "names must be up to 10 comma-separated names of 1 to 248 bytes");
+            return;
+        }
+        byte[] prefix = manufacturerHex == null ? null : fromHex(manufacturerHex);
+        if (manufacturerId > 0xFFFF || (manufacturerHex != null && (prefix == null || manufacturerId < 0))) {
+            fail(call, "bad_value", "manufacturer_id is 0 to 65535; manufacturer_hex is hex bytes and needs manufacturer_id");
+            return;
+        }
+        for (String k : options.keySet()) {
+            if (!SCAN_OPTION_KEYS.contains(k)) {
+                fail(call, "bad_value", "unknown scan option " + k + "; the options are " + String.join(", ", SCAN_OPTION_KEYS));
+                return;
+            }
+        }
+        if (options.get("solicited") instanceof String) {
+            List<String> list = uuidList((String) options.get("solicited"));
+            if (list == null) {
+                fail(call, "bad_value", "solicited must be up to 20 UUIDs");
+                return;
+            }
+            options.put("solicited", new ArrayList<Object>(list));
         }
         if (!on()) {
             fail(call, "unavailable", "Bluetooth is " + adapter);
@@ -607,7 +753,11 @@ public final class BleCore {
             return;
         }
         int s = ++nextScan;
-        String err = port.scanStart(s, services, duplicates, mode);
+        // Set before the port call: the radio builds its platform filters from them.
+        scanNames = names;
+        scanManufacturer = manufacturerId;
+        scanManufacturerPrefix = prefix == null ? new byte[0] : prefix;
+        String err = port.scanStart(s, services, duplicates, mode, options);
         if (err != null) {
             refused(call, err);
             return;
@@ -617,7 +767,31 @@ public final class BleCore {
         devices.clear();
         filtered = !services.isEmpty();
         if (seconds > 0) port.timer("scan", s, seconds * 1000L);
-        ok(call, obj("scan", s));
+        ok(call, obj("scan", s, "applied", scanApplied(options, !names.isEmpty(), manufacturerId >= 0)));
+    }
+
+    /** Whether an advertisement passes the scan's own name and manufacturer filters. */
+    private boolean matches(Map<String, Object> adv) {
+        if (!scanNames.isEmpty()) {
+            Object n = adv.get("name");
+            if (!(n instanceof String) || !scanNames.contains(n)) return false;
+        }
+        if (scanManufacturer >= 0) {
+            Object list = adv.get("manufacturer");
+            if (!(list instanceof List)) return false;
+            for (Object m : (List<?>) list) {
+                if (!(m instanceof Map)) continue;
+                Map<?, ?> o = (Map<?, ?>) m;
+                if (!(o.get("id") instanceof Integer) || (Integer) o.get("id") != scanManufacturer) continue;
+                byte[] b = o.get("hex") instanceof String ? fromHex((String) o.get("hex")) : null;
+                if (b == null || b.length < scanManufacturerPrefix.length) continue;
+                boolean same = true;
+                for (int i = 0; i < scanManufacturerPrefix.length; i++) same &= b[i] == scanManufacturerPrefix[i];
+                if (same) return true;
+            }
+            return false;
+        }
+        return true;
     }
 
     boolean filtered;
@@ -646,6 +820,7 @@ public final class BleCore {
             stale("device scan " + s);
             return;
         }
+        if (!matches(adv)) return;
         Map<String, Object> d = devices.get(id);
         if (d == null) {
             if (devices.size() >= DEVICES_MAX) return;
@@ -709,10 +884,29 @@ public final class BleCore {
         return true;
     }
 
+    /**
+     * {@code seconds} 0: the attempt waits for the device without a time limit (iOS keeps a pending
+     * connection, Android connects with autoConnect); the route answers at once with
+     * {@code connecting} and the {@code link} event reports the connection.
+     */
     public void connect(int call, String id, boolean auto, int seconds) {
         if (!checkId(call, id)) return;
         if (!on()) {
             fail(call, "unavailable", "Bluetooth is " + adapter);
+            return;
+        }
+        if (seconds == 0) {
+            if (links.containsKey(id) || closing.containsKey(id)) {
+                fail(call, "busy", "this device is linked, connecting or closing");
+                return;
+            }
+            startLink(id, auto, -1, 0, true, new LinkedHashSet<>(), true);
+            Link l = links.get(id);
+            if (l == null) {
+                fail(call, lastRefusal[0], lastRefusal[1]);
+                return;
+            }
+            ok(call, obj("id", id, "link", l.gen, "state", "connecting", "mtu", l.mtu));
             return;
         }
         Link pending = links.get(id);
@@ -723,6 +917,7 @@ public final class BleCore {
                 pending.connectCall = call;
                 pending.auto = auto;
                 pending.background = false;
+                pending.unbounded = false;
                 boundPending(pending, seconds * 1000);
                 return;
             }
@@ -744,9 +939,15 @@ public final class BleCore {
     }
 
     private void startLink(String id, boolean auto, int call, int seconds, boolean background, Set<String> wanted) {
+        startLink(id, auto, call, seconds, background, wanted, false);
+    }
+
+    private void startLink(String id, boolean auto, int call, int seconds, boolean background, Set<String> wanted,
+                           boolean unbounded) {
         Link l = new Link(id, ++nextGen);
         l.auto = auto;
         l.background = background;
+        l.unbounded = unbounded;
         l.connectCall = call;
         l.wanted.addAll(wanted);
         links.put(id, l);
@@ -754,11 +955,17 @@ public final class BleCore {
         if (err != null) {
             links.remove(id);
             l.closed = true;
+            int sp = err.indexOf(' ');
+            lastRefusal = new String[]{sp < 0 ? err : err.substring(0, sp), sp < 0 ? "" : err.substring(sp + 1)};
             refused(call, err);
             return;
         }
         if (call >= 0) port.timer("connect", l.gen, seconds * 1000L);
-        if (background) record("link", obj("id", id, "link", l.gen, "state", "reconnecting", "reason", "auto"));
+        if (unbounded) {
+            record("link", obj("id", id, "link", l.gen, "state", "connecting", "reason", "requested"));
+        } else if (background) {
+            record("link", obj("id", id, "link", l.gen, "state", "reconnecting", "reason", "auto"));
+        }
         updateHold();
     }
 
@@ -1010,19 +1217,17 @@ public final class BleCore {
 
     public void write(int call, String id, String service, int sn, String chr, int cn, String descriptor,
                       String hexValue, String b64Value, boolean response) {
+        write(call, id, service, sn, chr, cn, descriptor, hexValue, b64Value, response, null);
+    }
+
+    public void write(int call, String id, String service, int sn, String chr, int cn, String descriptor,
+                      String hexValue, String b64Value, boolean response, String text) {
         Link l = connectedLink(call, id);
         if (l == null) return;
         String k = target(call, service, sn, chr, cn);
         if (k == null) return;
-        byte[] data = bytes(hexValue, b64Value);
-        if (data == null) {
-            fail(call, "bad_value", "give exactly one of hex and b64, well formed");
-            return;
-        }
-        if (data.length > WRITE_MAX) {
-            fail(call, "too_long", data.length + " bytes; at most " + WRITE_MAX);
-            return;
-        }
+        byte[] data = writeData(call, hexValue, b64Value, text);
+        if (data == null) return;
         String d = null;
         if (descriptor != null) {
             d = uuid(descriptor);
@@ -1037,6 +1242,97 @@ public final class BleCore {
         o.descriptor = d;
         o.data = data;
         enqueue(call, l, o);
+    }
+
+    /** The bytes of a write (exactly one of hex, b64 and text), or null after failing the call. */
+    private byte[] writeData(int call, String hexValue, String b64Value, String text) {
+        byte[] data = bytes(hexValue, b64Value, text);
+        if (data == null) {
+            fail(call, "bad_value", "give exactly one of hex, b64 and text, well formed");
+            return null;
+        }
+        if (data.length > WRITE_MAX) {
+            fail(call, "too_long", data.length + " bytes; at most " + WRITE_MAX);
+            return null;
+        }
+        return data;
+    }
+
+    /**
+     * The {@code raw} route: bytes to the first discovered characteristic that takes the write (with
+     * response by default). The reply names the characteristic.
+     */
+    public void raw(int call, String id, String hexValue, String b64Value, String text, boolean response) {
+        Link l = connectedLink(call, id);
+        if (l == null) return;
+        byte[] data = writeData(call, hexValue, b64Value, text);
+        if (data == null) return;
+        String k = port.writable(l.id, l.gen, response);
+        if (k == null) {
+            fail(call, "not_found", "no discovered characteristic takes a write " + (response ? "with" : "without")
+                    + " response (run discover first)");
+            return;
+        }
+        Op o = new Op(call, response ? "write" : "wnr");
+        o.key = k;
+        o.data = data;
+        o.raw = true;
+        enqueue(call, l, o);
+    }
+
+    /** Android requestConnectionPriority: {@code level} balanced, high, low_power or dck. */
+    public void priority(int call, String id, String level) {
+        Link l = connectedLink(call, id);
+        if (l == null) return;
+        if (!android) {
+            fail(call, "platform_limit", "iOS has no API to request a connection priority or interval; the system and the peripheral set it");
+            return;
+        }
+        Op o = new Op(call, "priority");
+        o.key = level;
+        enqueue(call, l, o);
+    }
+
+    /** Android setPreferredPhy (tx and rx given, {@code coded} none, s2 or s8) or readPhy (neither given). */
+    public void phy(int call, String id, String tx, String rx, String coded) {
+        Link l = connectedLink(call, id);
+        if (l == null) return;
+        if (!android) {
+            fail(call, "platform_limit", "iOS has no API to read or set the LE PHY; the system chooses it");
+            return;
+        }
+        if (tx == null && rx == null) {
+            enqueue(call, l, new Op(call, "phy_read"));
+            return;
+        }
+        List<String> t = phyList(tx != null ? tx : rx), r = phyList(rx != null ? rx : tx);
+        if (t == null || r == null) {
+            fail(call, "bad_value", "tx and rx are comma-separated PHYs: 1m, 2m, coded");
+            return;
+        }
+        Op o = new Op(call, "phy_set");
+        o.key = String.join(",", t) + "/" + String.join(",", r) + "/" + coded;
+        enqueue(call, l, o);
+    }
+
+    /** The link's PHY changed (Android onPhyUpdate). It completes a phy_set in flight; otherwise it is a {@code phy} event. */
+    public void phyChanged(String id, int gen, String tx, String rx, String code) {
+        Link l = live(id, gen, "phy");
+        if (l == null) return;
+        Op o = l.inFlight;
+        if (o != null && "phy_set".equals(o.kind)) {
+            l.inFlight = null;
+            settle(l, o, code == null ? null : "gatt_error", code == null ? null : "the PHY update failed: " + code,
+                    obj("tx", tx, "rx", rx));
+            pump(l);
+            return;
+        }
+        if (code == null) record("phy", obj("id", id, "link", gen, "tx", tx, "rx", rx));
+    }
+
+    /** An event the extension produces outside the core's state (bond changes, for one): kept in the journal like every event. */
+    public void external(String event, Map<String, Object> data) {
+        record(event, data);
     }
 
     public void subscribe(int call, String id, String service, int sn, String chr, int cn, boolean on) {
@@ -1117,7 +1413,7 @@ public final class BleCore {
     }
 
     private void ready(Link l) {
-        record("link", obj("id", l.id, "link", l.gen, "state", "connected", "reason", l.background ? "auto" : "requested",
+        record("link", obj("id", l.id, "link", l.gen, "state", "connected", "reason", l.background && !l.unbounded ? "auto" : "requested",
                 "resubscribed", l.resubscribed, "failed", l.failed));
         if (l.connectCall >= 0) {
             ok(l.connectCall, obj("id", l.id, "link", l.gen, "state", "connected", "mtu", l.mtu));
@@ -1165,11 +1461,16 @@ public final class BleCore {
         }
         switch (o.kind) {
             case "write":
-                ok(o.call, obj("written", o.data.length, "chunks", 1));
+            case "wnr": {
+                Map<String, Object> r = obj("written", o.data.length, "chunks", "wnr".equals(o.kind) ? o.chunks : 1);
+                if (o.raw && o.key != null) {
+                    String[] p = o.key.split("[#/]");
+                    r.putAll(obj("service", p[0], "char", p[2], "service_n", Integer.parseInt(p[1]),
+                            "char_n", Integer.parseInt(p[3]), "response", "write".equals(o.kind)));
+                }
+                ok(o.call, r);
                 break;
-            case "wnr":
-                ok(o.call, obj("written", o.data.length, "chunks", o.chunks));
-                break;
+            }
             case "sub": {
                 String mode = data != null && data.get("mode") != null ? (String) data.get("mode") : "notify";
                 l.subs.put(o.key, mode);
@@ -1554,14 +1855,18 @@ public final class BleCore {
     }
 
     public void valueSet(int call, String service, String chrUuid, int cn, String hexValue, String b64Value) {
+        valueSet(call, service, chrUuid, cn, hexValue, b64Value, null);
+    }
+
+    public void valueSet(int call, String service, String chrUuid, int cn, String hexValue, String b64Value, String text) {
         Chr c = chr(service, chrUuid, cn);
         if (c == null) {
             fail(call, "not_found", "no such characteristic in the table");
             return;
         }
-        byte[] data = bytes(hexValue, b64Value);
+        byte[] data = bytes(hexValue, b64Value, text);
         if (data == null) {
-            fail(call, "bad_value", "give exactly one of hex and b64, well formed");
+            fail(call, "bad_value", "give exactly one of hex, b64 and text, well formed");
             return;
         }
         if (overMax(call, data)) return;
@@ -1578,14 +1883,19 @@ public final class BleCore {
     }
 
     public void notify(int call, String service, String chrUuid, int cn, String hexValue, String b64Value, String central) {
+        notify(call, service, chrUuid, cn, hexValue, b64Value, central, null);
+    }
+
+    public void notify(int call, String service, String chrUuid, int cn, String hexValue, String b64Value, String central,
+                       String text) {
         Chr c = chr(service, chrUuid, cn);
         if (c == null) {
             fail(call, "not_found", "no such characteristic in the table");
             return;
         }
-        byte[] data = bytes(hexValue, b64Value);
+        byte[] data = bytes(hexValue, b64Value, text);
         if (data == null) {
-            fail(call, "bad_value", "give exactly one of hex and b64, well formed");
+            fail(call, "bad_value", "give exactly one of hex, b64 and text, well formed");
             return;
         }
         if (overMax(call, data)) return;
@@ -1867,6 +2177,17 @@ public final class BleCore {
 
     public void advertiseStart(int call, String servicesCsv, String name, int manufacturerId, String manufacturerHex,
                                String serviceDataUuid, String serviceDataHex, boolean connectable, String mode, int seconds) {
+        advertiseStart(call, servicesCsv, name, manufacturerId, manufacturerHex, serviceDataUuid, serviceDataHex, connectable,
+                mode, seconds, null, null);
+    }
+
+    /**
+     * {@code txPower} (ultra_low, low, medium, high) and {@code includeTxPower}: Android's
+     * AdvertiseSettings tx power level and AdvertiseData tx power field, kept only when given.
+     */
+    public void advertiseStart(int call, String servicesCsv, String name, int manufacturerId, String manufacturerHex,
+                               String serviceDataUuid, String serviceDataHex, boolean connectable, String mode, int seconds,
+                               String txPower, Boolean includeTxPower) {
         List<String> uuids = uuidList(servicesCsv);
         if (uuids == null) {
             fail(call, "bad_value", "services must be up to 20 UUIDs");
@@ -1899,6 +2220,8 @@ public final class BleCore {
         p.put("connectable", connectable);
         p.put("mode", mode);
         p.put("seconds", seconds);
+        if (txPower != null) p.put("txPower", txPower);
+        if (includeTxPower != null) p.put("includeTxPower", includeTxPower);
         advWanted = p;
         advUntil = 0;
         advCall = call;
@@ -1929,6 +2252,8 @@ public final class BleCore {
         a.put("serviceData", android && p.get("serviceDataUuid") != null);
         a.put("connectable", android ? p.get("connectable") : Boolean.TRUE);
         a.put("mode", android ? p.get("mode") : null);
+        if (p.get("txPower") != null) a.put("txPower", android ? p.get("txPower") : null);
+        if (p.get("includeTxPower") != null) a.put("includeTxPower", android && Boolean.TRUE.equals(p.get("includeTxPower")));
         return a;
     }
 
@@ -2217,6 +2542,31 @@ public final class BleCore {
     // ---- journal --------------------------------------------------------------------------------
 
     public void events(int call, int after, int max) {
+        events(call, after, max, null);
+    }
+
+    /**
+     * {@code asked}: null or this run reads the live journal; the previous run's id reads the journal
+     * the previous app process left on disk.
+     */
+    public void events(int call, int after, int max, String asked) {
+        if (asked != null && !asked.equals(run)) {
+            if (!asked.equals(previousRun)) {
+                fail(call, "not_found", "no journal is kept for that run");
+                return;
+            }
+            List<Object> out = new ArrayList<>();
+            int next = after;
+            for (Map<String, Object> r : previousRecords) {
+                if (out.size() >= max) break;
+                int seq = r.get("seq") instanceof Number ? ((Number) r.get("seq")).intValue() : 0;
+                if (seq <= after) continue;
+                out.add(r);
+                next = seq;
+            }
+            ok(call, obj("records", out, "next", next, "dropped", previousDropped, "run", asked));
+            return;
+        }
         List<Object> out = new ArrayList<>();
         int next = after;
         for (Iterator<Map<String, Object>> it = journal.iterator(); it.hasNext() && out.size() < max; ) {
