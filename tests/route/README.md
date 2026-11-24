@@ -5,7 +5,7 @@
 - the answer has the standard envelope;
 - an error carries a documented code and message;
 - `state` answers;
-- on iOS, the bond routes answer `platform_limit`.
+- on iOS, the bond routes and `advertise_set_start` answer `platform_limit`.
 
 ```sh
 python3 -I tests/route/check_routes.py ios tests/route/plan-ios.json results.jsonl

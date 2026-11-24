@@ -774,6 +774,297 @@
           "variable": "bleKeepAlive",
           "callback": "onBleKeepAlive"
         }
+      },
+      {
+        "name": "respond",
+        "params": {
+          "request": {
+            "type": "int",
+            "min": 1,
+            "required": true
+          },
+          "status": {
+            "type": "enum",
+            "values": [
+              "ok",
+              "not_permitted",
+              "invalid_offset",
+              "invalid_length",
+              "insufficient_authentication",
+              "insufficient_authorization",
+              "insufficient_encryption",
+              "not_supported",
+              "insufficient_resources",
+              "unlikely"
+            ]
+          },
+          "hex": {
+            "type": "string",
+            "max": 1024
+          },
+          "b64": {
+            "type": "string",
+            "max": 684
+          },
+          "text": {
+            "type": "string",
+            "max": 512
+          },
+          "offset": {
+            "type": "int",
+            "min": 0,
+            "max": 511
+          }
+        },
+        "output": {
+          "variable": "bleRespond",
+          "callback": "onBleRespond"
+        }
+      },
+      {
+        "name": "l2cap_publish",
+        "params": {
+          "encrypted": {
+            "type": "bool"
+          }
+        },
+        "output": {
+          "variable": "bleL2CapPublish",
+          "callback": "onBleL2CapPublish"
+        }
+      },
+      {
+        "name": "l2cap_unpublish",
+        "params": {
+          "psm": {
+            "type": "int",
+            "min": 1,
+            "max": 255,
+            "required": true
+          }
+        },
+        "output": {
+          "variable": "bleL2CapUnpublish",
+          "callback": "onBleL2CapUnpublish"
+        }
+      },
+      {
+        "name": "l2cap_open",
+        "params": {
+          "id": {
+            "type": "string",
+            "max": 64,
+            "required": true
+          },
+          "psm": {
+            "type": "int",
+            "min": 1,
+            "max": 255,
+            "required": true
+          },
+          "encrypted": {
+            "type": "bool"
+          },
+          "seconds": {
+            "type": "int",
+            "min": 1,
+            "max": 20
+          }
+        },
+        "timeout_ms": 25000,
+        "output": {
+          "variable": "bleL2CapOpen",
+          "callback": "onBleL2CapOpen"
+        }
+      },
+      {
+        "name": "l2cap_send",
+        "params": {
+          "channel": {
+            "type": "int",
+            "min": 1,
+            "required": true
+          },
+          "hex": {
+            "type": "string",
+            "max": 4096
+          },
+          "b64": {
+            "type": "string",
+            "max": 2732
+          },
+          "text": {
+            "type": "string",
+            "max": 2048
+          }
+        },
+        "output": {
+          "variable": "bleL2CapSend",
+          "callback": "onBleL2CapSend"
+        }
+      },
+      {
+        "name": "l2cap_close",
+        "params": {
+          "channel": {
+            "type": "int",
+            "min": 1,
+            "required": true
+          }
+        },
+        "output": {
+          "variable": "bleL2CapClose",
+          "callback": "onBleL2CapClose"
+        }
+      },
+      {
+        "name": "l2cap_channels",
+        "params": {},
+        "output": {
+          "variable": "bleL2CapChannels",
+          "callback": "onBleL2CapChannels"
+        }
+      },
+      {
+        "name": "advertise_set_start",
+        "params": {
+          "legacy": {
+            "type": "bool"
+          },
+          "connectable": {
+            "type": "bool"
+          },
+          "scannable": {
+            "type": "bool"
+          },
+          "anonymous": {
+            "type": "bool"
+          },
+          "include_tx_power": {
+            "type": "bool"
+          },
+          "primary_phy": {
+            "type": "enum",
+            "values": [
+              "1m",
+              "coded"
+            ]
+          },
+          "secondary_phy": {
+            "type": "enum",
+            "values": [
+              "1m",
+              "2m",
+              "coded"
+            ]
+          },
+          "interval_ms": {
+            "type": "int",
+            "min": 100,
+            "max": 10485759
+          },
+          "tx_power_dbm": {
+            "type": "int",
+            "min": -127,
+            "max": 1
+          },
+          "services": {
+            "type": "string",
+            "max": 740
+          },
+          "include_name": {
+            "type": "bool"
+          },
+          "manufacturer_id": {
+            "type": "int",
+            "min": 0,
+            "max": 65535
+          },
+          "manufacturer_hex": {
+            "type": "string",
+            "max": 3304
+          },
+          "service_data_uuid": {
+            "type": "string",
+            "max": 36
+          },
+          "service_data_hex": {
+            "type": "string",
+            "max": 3304
+          },
+          "tx_power_data": {
+            "type": "bool"
+          },
+          "response_services": {
+            "type": "string",
+            "max": 740
+          },
+          "response_include_name": {
+            "type": "bool"
+          },
+          "response_manufacturer_id": {
+            "type": "int",
+            "min": 0,
+            "max": 65535
+          },
+          "response_manufacturer_hex": {
+            "type": "string",
+            "max": 3304
+          },
+          "periodic_interval_ms": {
+            "type": "int",
+            "min": 100,
+            "max": 81898
+          },
+          "periodic_include_tx_power": {
+            "type": "bool"
+          },
+          "periodic_manufacturer_id": {
+            "type": "int",
+            "min": 0,
+            "max": 65535
+          },
+          "periodic_manufacturer_hex": {
+            "type": "string",
+            "max": 3304
+          },
+          "periodic_service_data_uuid": {
+            "type": "string",
+            "max": 36
+          },
+          "periodic_service_data_hex": {
+            "type": "string",
+            "max": 3304
+          },
+          "seconds": {
+            "type": "int",
+            "min": 0,
+            "max": 655
+          },
+          "max_events": {
+            "type": "int",
+            "min": 0,
+            "max": 255
+          }
+        },
+        "output": {
+          "variable": "bleAdvertiseSetStart",
+          "callback": "onBleAdvertiseSetStart"
+        }
+      },
+      {
+        "name": "advertise_set_stop",
+        "params": {
+          "set": {
+            "type": "int",
+            "min": 1,
+            "required": true
+          }
+        },
+        "output": {
+          "variable": "bleAdvertiseSetStop",
+          "callback": "onBleAdvertiseSetStop"
+        }
       }
     ],
     "events": [
@@ -845,6 +1136,26 @@
       {
         "name": "ancs",
         "callback": "onBleAncs",
+        "scope": "document"
+      },
+      {
+        "name": "att_request",
+        "callback": "onBleAttRequest",
+        "scope": "document"
+      },
+      {
+        "name": "l2cap",
+        "callback": "onBleL2cap",
+        "scope": "document"
+      },
+      {
+        "name": "l2cap_data",
+        "callback": "onBleL2capData",
+        "scope": "document"
+      },
+      {
+        "name": "advertising_set",
+        "callback": "onBleAdvertisingSet",
         "scope": "document"
       }
     ]

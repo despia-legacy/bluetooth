@@ -6555,6 +6555,1445 @@
           ]
         }
       ]
+    },
+    "answers": {
+      "row": "BL-P14",
+      "scenarios": [
+        {
+          "name": "pages_answer_reads_and_writes_android",
+          "platform": "android",
+          "steps": [
+            {
+              "do": "adapter",
+              "state": "on",
+              "out": [
+                "emit adapter {\"state\":\"on\",\"epoch\":1}"
+              ]
+            },
+            {
+              "do": "service_add",
+              "call": 2,
+              "uuid": "180d",
+              "chars": "2a37~a",
+              "out": [
+                "reply 2 error bad_value"
+              ]
+            },
+            {
+              "do": "service_add",
+              "call": 3,
+              "uuid": "180d",
+              "chars": "2a38~rwa,2a39~w",
+              "out": [
+                "service_add 1 0000180d-0000-1000-8000-00805f9b34fb true [{\"uuid\":\"00002a38-0000-1000-8000-00805f9b34fb\",\"n\":0,\"flags\":\"rwa\",\"hex\":\"\"},{\"uuid\":\"00002a39-0000-1000-8000-00805f9b34fb\",\"n\":0,\"flags\":\"w\",\"hex\":\"\"}]",
+                "timer service 1 10000"
+              ]
+            },
+            {
+              "do": "service_added",
+              "epoch": 1,
+              "uuid": "0000180d-0000-1000-8000-00805f9b34fb",
+              "out": [
+                "reply 3 ok {\"uuid\":\"0000180d-0000-1000-8000-00805f9b34fb\",\"characteristics\":[{\"uuid\":\"00002a38-0000-1000-8000-00805f9b34fb\",\"n\":0,\"properties\":[\"read\",\"write\"],\"subscribers\":[],\"hex\":\"\"},{\"uuid\":\"00002a39-0000-1000-8000-00805f9b34fb\",\"n\":0,\"properties\":[\"write\"],\"subscribers\":[],\"hex\":\"\"}]}"
+              ]
+            },
+            {
+              "do": "central_connected",
+              "epoch": 1,
+              "central": "11:22:33:44:55:66",
+              "mtu": 185,
+              "out": [
+                "emit central {\"central\":\"11:22:33:44:55:66\",\"state\":\"connected\",\"mtu\":185}"
+              ]
+            },
+            {
+              "do": "read_request",
+              "epoch": 1,
+              "central": "11:22:33:44:55:66",
+              "mtu": 185,
+              "key": "0000180d-0000-1000-8000-00805f9b34fb#0/00002a38-0000-1000-8000-00805f9b34fb#0",
+              "offset": 0,
+              "out": [
+                "emit att_request {\"request\":1,\"state\":\"open\",\"kind\":\"read\",\"central\":\"11:22:33:44:55:66\",\"service\":\"0000180d-0000-1000-8000-00805f9b34fb\",\"char\":\"00002a38-0000-1000-8000-00805f9b34fb\",\"char_n\":0,\"offset\":0,\"mtu\":185}",
+                "timer att 1 25000",
+                "answer {\"status\":\"pending\",\"request\":1}"
+              ]
+            },
+            {
+              "do": "respond",
+              "call": 10,
+              "request": 1,
+              "status": "bogus",
+              "out": [
+                "reply 10 error bad_value"
+              ]
+            },
+            {
+              "do": "respond",
+              "call": 11,
+              "request": 1,
+              "out": [
+                "reply 11 error bad_value"
+              ]
+            },
+            {
+              "do": "respond",
+              "call": 12,
+              "request": 1,
+              "hex": "zz",
+              "out": [
+                "reply 12 error bad_value"
+              ]
+            },
+            {
+              "do": "respond",
+              "call": 13,
+              "request": 1,
+              "hex": "0a0b",
+              "out": [
+                "att_respond 1 1 ok 0 0a0b",
+                "emit att_request {\"request\":1,\"state\":\"answered\",\"status\":\"ok\"}",
+                "reply 13 ok {\"request\":1,\"status\":\"ok\",\"bytes\":2}"
+              ]
+            },
+            {
+              "do": "respond",
+              "call": 14,
+              "request": 1,
+              "hex": "0a0b",
+              "out": [
+                "reply 14 error not_found"
+              ]
+            },
+            {
+              "do": "read_request",
+              "epoch": 1,
+              "central": "11:22:33:44:55:66",
+              "mtu": 185,
+              "key": "0000180d-0000-1000-8000-00805f9b34fb#0/00002a38-0000-1000-8000-00805f9b34fb#0",
+              "offset": 4,
+              "out": [
+                "emit att_request {\"request\":2,\"state\":\"open\",\"kind\":\"read\",\"central\":\"11:22:33:44:55:66\",\"service\":\"0000180d-0000-1000-8000-00805f9b34fb\",\"char\":\"00002a38-0000-1000-8000-00805f9b34fb\",\"char_n\":0,\"offset\":4,\"mtu\":185}",
+                "timer att 2 25000",
+                "answer {\"status\":\"pending\",\"request\":2}"
+              ]
+            },
+            {
+              "do": "respond",
+              "call": 15,
+              "request": 2,
+              "status": "invalid_offset",
+              "hex": "00",
+              "out": [
+                "reply 15 error bad_value"
+              ]
+            },
+            {
+              "do": "respond",
+              "call": 16,
+              "request": 2,
+              "status": "invalid_offset",
+              "out": [
+                "att_respond 1 2 invalid_offset 4 -",
+                "emit att_request {\"request\":2,\"state\":\"answered\",\"status\":\"invalid_offset\"}",
+                "reply 16 ok {\"request\":2,\"status\":\"invalid_offset\",\"bytes\":0}"
+              ]
+            },
+            {
+              "do": "write_request",
+              "epoch": 1,
+              "central": "11:22:33:44:55:66",
+              "mtu": 185,
+              "requests": [
+                {
+                  "key": "0000180d-0000-1000-8000-00805f9b34fb#0/00002a38-0000-1000-8000-00805f9b34fb#0",
+                  "offset": 0,
+                  "hex": "01"
+                },
+                {
+                  "key": "0000180d-0000-1000-8000-00805f9b34fb#0/00002a39-0000-1000-8000-00805f9b34fb#0",
+                  "offset": 0,
+                  "hex": "02"
+                }
+              ],
+              "out": [
+                "emit att_request {\"request\":3,\"state\":\"open\",\"kind\":\"write\",\"central\":\"11:22:33:44:55:66\",\"writes\":[{\"service\":\"0000180d-0000-1000-8000-00805f9b34fb\",\"char\":\"00002a38-0000-1000-8000-00805f9b34fb\",\"char_n\":0,\"offset\":0,\"hex\":\"01\"}],\"mtu\":185}",
+                "timer att 3 25000",
+                "status pending 3"
+              ]
+            },
+            {
+              "do": "respond",
+              "call": 17,
+              "request": 3,
+              "hex": "01",
+              "out": [
+                "reply 17 error bad_value"
+              ]
+            },
+            {
+              "do": "respond",
+              "call": 18,
+              "request": 3,
+              "out": [
+                "att_respond 1 3 ok 0 -",
+                "timer flush 0 50",
+                "emit att_request {\"request\":3,\"state\":\"answered\",\"status\":\"ok\"}",
+                "reply 18 ok {\"request\":3,\"status\":\"ok\",\"bytes\":0}"
+              ]
+            },
+            {
+              "do": "timer",
+              "kind": "flush",
+              "token": 0,
+              "out": [
+                "emit request {\"records\":[{\"seq\":8,\"t\":0,\"central\":\"11:22:33:44:55:66\",\"kind\":\"write\",\"service\":\"0000180d-0000-1000-8000-00805f9b34fb\",\"char\":\"00002a39-0000-1000-8000-00805f9b34fb\",\"char_n\":0,\"hex\":\"02\"}],\"dropped\":0}"
+              ]
+            },
+            {
+              "do": "write_request",
+              "epoch": 1,
+              "central": "11:22:33:44:55:66",
+              "mtu": 185,
+              "requests": [
+                {
+                  "key": "0000180d-0000-1000-8000-00805f9b34fb#0/00002a38-0000-1000-8000-00805f9b34fb#0",
+                  "offset": 0,
+                  "hex": "03",
+                  "response": false
+                }
+              ],
+              "out": [
+                "emit att_request {\"request\":null,\"state\":\"unanswered\",\"kind\":\"write\",\"central\":\"11:22:33:44:55:66\",\"writes\":[{\"service\":\"0000180d-0000-1000-8000-00805f9b34fb\",\"char\":\"00002a38-0000-1000-8000-00805f9b34fb\",\"char_n\":0,\"offset\":0,\"hex\":\"03\"}],\"mtu\":185}",
+                "status ok"
+              ]
+            },
+            {
+              "do": "write_request",
+              "epoch": 1,
+              "central": "11:22:33:44:55:66",
+              "mtu": 185,
+              "requests": [
+                {
+                  "key": "0000180d-0000-1000-8000-00805f9b34fb#0/00002a38-0000-1000-8000-00805f9b34fb#0",
+                  "offset": 510,
+                  "hex": "010203"
+                }
+              ],
+              "out": [
+                "status invalid_length"
+              ]
+            },
+            {
+              "do": "write_request",
+              "epoch": 1,
+              "central": "11:22:33:44:55:66",
+              "mtu": 185,
+              "prepare": true,
+              "requests": [
+                {
+                  "key": "0000180d-0000-1000-8000-00805f9b34fb#0/00002a38-0000-1000-8000-00805f9b34fb#0",
+                  "offset": 0,
+                  "hex": "0405"
+                }
+              ],
+              "out": [
+                "status ok"
+              ]
+            },
+            {
+              "do": "execute_write",
+              "epoch": 1,
+              "central": "11:22:33:44:55:66",
+              "execute": true,
+              "out": [
+                "emit att_request {\"request\":4,\"state\":\"open\",\"kind\":\"write\",\"central\":\"11:22:33:44:55:66\",\"writes\":[{\"service\":\"0000180d-0000-1000-8000-00805f9b34fb\",\"char\":\"00002a38-0000-1000-8000-00805f9b34fb\",\"char_n\":0,\"offset\":0,\"hex\":\"0405\"}],\"mtu\":185}",
+                "timer att 4 25000",
+                "status pending 4"
+              ]
+            },
+            {
+              "do": "port",
+              "refuse": {
+                "att_respond": "unavailable the radio no longer holds this request"
+              },
+              "out": []
+            },
+            {
+              "do": "respond",
+              "call": 19,
+              "request": 4,
+              "status": "insufficient_authorization",
+              "out": [
+                "att_respond 1 4 insufficient_authorization 0 -",
+                "reply 19 error unavailable"
+              ]
+            },
+            {
+              "do": "respond",
+              "call": 20,
+              "request": 4,
+              "out": [
+                "reply 20 error not_found"
+              ]
+            },
+            {
+              "do": "read_request",
+              "epoch": 1,
+              "central": "11:22:33:44:55:66",
+              "mtu": 185,
+              "key": "0000180d-0000-1000-8000-00805f9b34fb#0/00002a38-0000-1000-8000-00805f9b34fb#0",
+              "offset": 0,
+              "out": [
+                "emit att_request {\"request\":5,\"state\":\"open\",\"kind\":\"read\",\"central\":\"11:22:33:44:55:66\",\"service\":\"0000180d-0000-1000-8000-00805f9b34fb\",\"char\":\"00002a38-0000-1000-8000-00805f9b34fb\",\"char_n\":0,\"offset\":0,\"mtu\":185}",
+                "timer att 5 25000",
+                "answer {\"status\":\"pending\",\"request\":5}"
+              ]
+            },
+            {
+              "do": "timer",
+              "kind": "att",
+              "token": 5,
+              "out": [
+                "att_respond 1 5 unlikely 0 -",
+                "emit att_request {\"request\":5,\"state\":\"expired\",\"status\":\"unlikely\"}"
+              ]
+            },
+            {
+              "do": "timer",
+              "kind": "att",
+              "token": 5,
+              "out": [
+                "stale att timer 5"
+              ]
+            },
+            {
+              "do": "read_request",
+              "epoch": 1,
+              "central": "11:22:33:44:55:66",
+              "mtu": 185,
+              "key": "0000180d-0000-1000-8000-00805f9b34fb#0/00002a38-0000-1000-8000-00805f9b34fb#0",
+              "offset": 0,
+              "out": [
+                "emit att_request {\"request\":6,\"state\":\"open\",\"kind\":\"read\",\"central\":\"11:22:33:44:55:66\",\"service\":\"0000180d-0000-1000-8000-00805f9b34fb\",\"char\":\"00002a38-0000-1000-8000-00805f9b34fb\",\"char_n\":0,\"offset\":0,\"mtu\":185}",
+                "timer att 6 25000",
+                "answer {\"status\":\"pending\",\"request\":6}"
+              ]
+            },
+            {
+              "do": "central_disconnected",
+              "epoch": 1,
+              "central": "11:22:33:44:55:66",
+              "out": [
+                "emit att_request {\"request\":6,\"state\":\"dropped\",\"reason\":\"remote\"}",
+                "emit central {\"central\":\"11:22:33:44:55:66\",\"state\":\"disconnected\",\"reason\":\"remote\"}"
+              ]
+            },
+            {
+              "do": "respond",
+              "call": 21,
+              "request": 6,
+              "out": [
+                "reply 21 error not_found"
+              ]
+            },
+            {
+              "do": "read_request",
+              "epoch": 1,
+              "central": "11:22:33:44:55:66",
+              "mtu": 185,
+              "key": "0000180d-0000-1000-8000-00805f9b34fb#0/00002a38-0000-1000-8000-00805f9b34fb#0",
+              "offset": 0,
+              "out": [
+                "emit central {\"central\":\"11:22:33:44:55:66\",\"state\":\"connected\",\"mtu\":185}",
+                "emit att_request {\"request\":7,\"state\":\"open\",\"kind\":\"read\",\"central\":\"11:22:33:44:55:66\",\"service\":\"0000180d-0000-1000-8000-00805f9b34fb\",\"char\":\"00002a38-0000-1000-8000-00805f9b34fb\",\"char_n\":0,\"offset\":0,\"mtu\":185}",
+                "timer att 7 25000",
+                "answer {\"status\":\"pending\",\"request\":7}"
+              ]
+            },
+            {
+              "do": "adapter",
+              "state": "off",
+              "out": [
+                "emit att_request {\"request\":7,\"state\":\"dropped\",\"reason\":\"adapter\"}",
+                "emit central {\"central\":\"11:22:33:44:55:66\",\"state\":\"disconnected\",\"reason\":\"adapter\"}",
+                "emit adapter {\"state\":\"off\",\"epoch\":2}"
+              ]
+            },
+            {
+              "do": "respond",
+              "call": 22,
+              "request": 7,
+              "out": [
+                "reply 22 error not_found"
+              ]
+            }
+          ]
+        },
+        {
+          "name": "pages_answer_reads_and_writes_ios",
+          "platform": "ios",
+          "steps": [
+            {
+              "do": "adapter",
+              "state": "on",
+              "out": [
+                "emit adapter {\"state\":\"on\",\"epoch\":1}"
+              ]
+            },
+            {
+              "do": "service_add",
+              "call": 2,
+              "uuid": "180d",
+              "chars": "2a37~a",
+              "out": [
+                "reply 2 error bad_value"
+              ]
+            },
+            {
+              "do": "service_add",
+              "call": 3,
+              "uuid": "180d",
+              "chars": "2a38~rwa,2a39~w",
+              "out": [
+                "service_add 1 0000180d-0000-1000-8000-00805f9b34fb true [{\"uuid\":\"00002a38-0000-1000-8000-00805f9b34fb\",\"n\":0,\"flags\":\"rwa\",\"hex\":\"\"},{\"uuid\":\"00002a39-0000-1000-8000-00805f9b34fb\",\"n\":0,\"flags\":\"w\",\"hex\":\"\"}]",
+                "timer service 1 10000"
+              ]
+            },
+            {
+              "do": "service_added",
+              "epoch": 1,
+              "uuid": "0000180d-0000-1000-8000-00805f9b34fb",
+              "out": [
+                "reply 3 ok {\"uuid\":\"0000180d-0000-1000-8000-00805f9b34fb\",\"characteristics\":[{\"uuid\":\"00002a38-0000-1000-8000-00805f9b34fb\",\"n\":0,\"properties\":[\"read\",\"write\"],\"subscribers\":[],\"hex\":\"\"},{\"uuid\":\"00002a39-0000-1000-8000-00805f9b34fb\",\"n\":0,\"properties\":[\"write\"],\"subscribers\":[],\"hex\":\"\"}]}",
+                "timer persist 0 500"
+              ]
+            },
+            {
+              "do": "read_request",
+              "epoch": 1,
+              "central": "6E400001-B5A3-F393-E0A9-E50E24DCCA9E",
+              "mtu": 185,
+              "key": "0000180d-0000-1000-8000-00805f9b34fb#0/00002a38-0000-1000-8000-00805f9b34fb#0",
+              "offset": 2,
+              "out": [
+                "emit central {\"central\":\"6E400001-B5A3-F393-E0A9-E50E24DCCA9E\",\"state\":\"connected\",\"mtu\":185}",
+                "emit att_request {\"request\":1,\"state\":\"open\",\"kind\":\"read\",\"central\":\"6E400001-B5A3-F393-E0A9-E50E24DCCA9E\",\"service\":\"0000180d-0000-1000-8000-00805f9b34fb\",\"char\":\"00002a38-0000-1000-8000-00805f9b34fb\",\"char_n\":0,\"offset\":2,\"mtu\":185}",
+                "timer att 1 25000",
+                "answer {\"status\":\"pending\",\"request\":1}"
+              ]
+            },
+            {
+              "do": "respond",
+              "call": 10,
+              "request": 1,
+              "text": "hi",
+              "offset": 0,
+              "out": [
+                "att_respond 1 1 ok 0 6869",
+                "emit att_request {\"request\":1,\"state\":\"answered\",\"status\":\"ok\"}",
+                "reply 10 ok {\"request\":1,\"status\":\"ok\",\"bytes\":2}"
+              ]
+            },
+            {
+              "do": "write_request",
+              "epoch": 1,
+              "central": "6E400001-B5A3-F393-E0A9-E50E24DCCA9E",
+              "mtu": 185,
+              "requests": [
+                {
+                  "key": "0000180d-0000-1000-8000-00805f9b34fb#0/00002a38-0000-1000-8000-00805f9b34fb#0",
+                  "offset": 0,
+                  "hex": "aa"
+                },
+                {
+                  "key": "0000180d-0000-1000-8000-00805f9b34fb#0/00002a39-0000-1000-8000-00805f9b34fb#0",
+                  "offset": 0,
+                  "hex": "bb"
+                }
+              ],
+              "out": [
+                "emit att_request {\"request\":2,\"state\":\"open\",\"kind\":\"write\",\"central\":\"6E400001-B5A3-F393-E0A9-E50E24DCCA9E\",\"writes\":[{\"service\":\"0000180d-0000-1000-8000-00805f9b34fb\",\"char\":\"00002a38-0000-1000-8000-00805f9b34fb\",\"char_n\":0,\"offset\":0,\"hex\":\"aa\"}],\"mtu\":185}",
+                "timer att 2 25000",
+                "status pending 2"
+              ]
+            },
+            {
+              "do": "respond",
+              "call": 11,
+              "request": 2,
+              "status": "insufficient_encryption",
+              "out": [
+                "att_respond 1 2 insufficient_encryption 0 -",
+                "emit att_request {\"request\":2,\"state\":\"answered\",\"status\":\"insufficient_encryption\"}",
+                "reply 11 ok {\"request\":2,\"status\":\"insufficient_encryption\",\"bytes\":0}"
+              ]
+            },
+            {
+              "do": "timer",
+              "kind": "flush",
+              "token": 0,
+              "out": []
+            },
+            {
+              "do": "respond",
+              "call": 12,
+              "request": 2,
+              "out": [
+                "reply 12 error not_found"
+              ]
+            }
+          ]
+        },
+        {
+          "name": "l2cap_publish_open_send_close_android",
+          "platform": "android",
+          "steps": [
+            {
+              "do": "respond",
+              "call": 1,
+              "request": 1,
+              "out": [
+                "reply 1 error not_found"
+              ]
+            },
+            {
+              "do": "l2cap_publish",
+              "call": 2,
+              "out": [
+                "reply 2 error unavailable"
+              ]
+            },
+            {
+              "do": "adapter",
+              "state": "on",
+              "out": [
+                "emit adapter {\"state\":\"on\",\"epoch\":1}"
+              ]
+            },
+            {
+              "do": "port",
+              "refuse": {
+                "l2cap_publish": "l2cap_failed the adapter refused the listener"
+              },
+              "out": []
+            },
+            {
+              "do": "l2cap_publish",
+              "call": 3,
+              "out": [
+                "l2cap_publish 1 1 false",
+                "reply 3 error l2cap_failed"
+              ]
+            },
+            {
+              "do": "l2cap_publish",
+              "call": 4,
+              "encrypted": true,
+              "out": [
+                "l2cap_publish 1 2 true",
+                "timer l2cap_publish 2 10000"
+              ]
+            },
+            {
+              "do": "l2cap_published",
+              "epoch": 1,
+              "t": 9,
+              "psm": 128,
+              "out": [
+                "stale l2cap_published 9"
+              ]
+            },
+            {
+              "do": "l2cap_published",
+              "epoch": 1,
+              "t": 2,
+              "psm": 128,
+              "out": [
+                "reply 4 ok {\"psm\":128,\"encrypted\":true}"
+              ]
+            },
+            {
+              "do": "l2cap_publish",
+              "call": 5,
+              "out": [
+                "l2cap_publish 1 3 false",
+                "timer l2cap_publish 3 10000"
+              ]
+            },
+            {
+              "do": "l2cap_published",
+              "epoch": 1,
+              "t": 3,
+              "code": "BluetoothSocket IOException",
+              "out": [
+                "reply 5 error l2cap_failed"
+              ]
+            },
+            {
+              "do": "l2cap_incoming",
+              "epoch": 1,
+              "psm": 129,
+              "peer": "11:22:33:44:55:66",
+              "out": [
+                "stale l2cap_incoming psm 129",
+                "channel -1"
+              ]
+            },
+            {
+              "do": "l2cap_incoming",
+              "epoch": 1,
+              "psm": 128,
+              "peer": "11:22:33:44:55:66",
+              "out": [
+                "emit l2cap {\"channel\":1,\"state\":\"open\",\"role\":\"peripheral\",\"peer\":\"11:22:33:44:55:66\",\"psm\":128}",
+                "channel 1"
+              ]
+            },
+            {
+              "do": "l2cap_data",
+              "channel": 1,
+              "hex": "0102",
+              "out": [
+                "timer flush 0 50"
+              ]
+            },
+            {
+              "do": "l2cap_data",
+              "channel": 1,
+              "hex": "03",
+              "out": []
+            },
+            {
+              "do": "timer",
+              "kind": "flush",
+              "token": 0,
+              "out": [
+                "emit l2cap_data {\"records\":[{\"seq\":3,\"t\":0,\"channel\":1,\"hex\":\"0102\"},{\"seq\":4,\"t\":0,\"channel\":1,\"hex\":\"03\"}],\"dropped\":0}"
+              ]
+            },
+            {
+              "do": "l2cap_send",
+              "call": 6,
+              "channel": 1,
+              "hex": "aabb",
+              "out": [
+                "l2cap_send 1 aabb",
+                "reply 6 ok {\"channel\":1,\"bytes\":2}"
+              ]
+            },
+            {
+              "do": "l2cap_send",
+              "call": 7,
+              "channel": 1,
+              "out": [
+                "reply 7 error bad_value"
+              ]
+            },
+            {
+              "do": "l2cap_send",
+              "call": 8,
+              "channel": 9,
+              "hex": "aa",
+              "out": [
+                "reply 8 error not_found"
+              ]
+            },
+            {
+              "do": "l2cap_send",
+              "call": 9,
+              "channel": 1,
+              "hex": "000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000",
+              "out": [
+                "reply 9 error too_long"
+              ]
+            },
+            {
+              "do": "l2cap_open",
+              "call": 10,
+              "id": "nope",
+              "psm": 128,
+              "out": [
+                "reply 10 error bad_value"
+              ]
+            },
+            {
+              "do": "l2cap_open",
+              "call": 11,
+              "id": "AA:BB:CC:DD:EE:FF",
+              "psm": 0,
+              "out": [
+                "reply 11 error bad_value"
+              ]
+            },
+            {
+              "do": "l2cap_open",
+              "call": 12,
+              "id": "AA:BB:CC:DD:EE:FF",
+              "psm": 256,
+              "out": [
+                "reply 12 error bad_value"
+              ]
+            },
+            {
+              "do": "l2cap_open",
+              "call": 13,
+              "id": "AA:BB:CC:DD:EE:FF",
+              "psm": 131,
+              "encrypted": true,
+              "seconds": 5,
+              "out": [
+                "l2cap_open 1 2 AA:BB:CC:DD:EE:FF 131 true",
+                "timer l2cap_open 2 5000"
+              ]
+            },
+            {
+              "do": "l2cap_send",
+              "call": 14,
+              "channel": 2,
+              "hex": "aa",
+              "out": [
+                "reply 14 error not_connected"
+              ]
+            },
+            {
+              "do": "hold_count",
+              "out": [
+                "hold_count 1"
+              ]
+            },
+            {
+              "do": "l2cap_opened",
+              "epoch": 1,
+              "channel": 2,
+              "out": [
+                "emit l2cap {\"channel\":2,\"state\":\"open\",\"role\":\"central\",\"peer\":\"AA:BB:CC:DD:EE:FF\",\"psm\":131}",
+                "reply 13 ok {\"channel\":2,\"psm\":131,\"id\":\"AA:BB:CC:DD:EE:FF\"}"
+              ]
+            },
+            {
+              "do": "hold_count",
+              "out": [
+                "hold_count 2"
+              ]
+            },
+            {
+              "do": "l2cap_channels",
+              "call": 15,
+              "out": [
+                "reply 15 ok {\"channels\":[{\"channel\":1,\"state\":\"open\",\"role\":\"peripheral\",\"peer\":\"11:22:33:44:55:66\",\"psm\":128},{\"channel\":2,\"state\":\"open\",\"role\":\"central\",\"peer\":\"AA:BB:CC:DD:EE:FF\",\"psm\":131}],\"published\":[{\"psm\":128,\"encrypted\":true}]}"
+              ]
+            },
+            {
+              "do": "l2cap_open",
+              "call": 16,
+              "id": "AA:BB:CC:DD:EE:FF",
+              "psm": 132,
+              "out": [
+                "l2cap_open 1 3 AA:BB:CC:DD:EE:FF 132 false",
+                "timer l2cap_open 3 10000"
+              ]
+            },
+            {
+              "do": "timer",
+              "kind": "l2cap_open",
+              "token": 3,
+              "out": [
+                "l2cap_close 3",
+                "reply 16 error timeout"
+              ]
+            },
+            {
+              "do": "l2cap_opened",
+              "epoch": 1,
+              "channel": 3,
+              "out": [
+                "stale l2cap_opened 3"
+              ]
+            },
+            {
+              "do": "l2cap_open",
+              "call": 17,
+              "id": "AA:BB:CC:DD:EE:FF",
+              "psm": 133,
+              "out": [
+                "l2cap_open 1 4 AA:BB:CC:DD:EE:FF 133 false",
+                "timer l2cap_open 4 10000"
+              ]
+            },
+            {
+              "do": "expire",
+              "call": 17,
+              "out": []
+            },
+            {
+              "do": "l2cap_opened",
+              "epoch": 1,
+              "channel": 4,
+              "out": [
+                "l2cap_close 4",
+                "reply 17 error timeout"
+              ]
+            },
+            {
+              "do": "l2cap_open",
+              "call": 18,
+              "id": "AA:BB:CC:DD:EE:FF",
+              "psm": 134,
+              "out": [
+                "l2cap_open 1 5 AA:BB:CC:DD:EE:FF 134 false",
+                "timer l2cap_open 5 10000"
+              ]
+            },
+            {
+              "do": "l2cap_opened",
+              "epoch": 1,
+              "channel": 5,
+              "code": "status 4",
+              "out": [
+                "reply 18 error l2cap_failed"
+              ]
+            },
+            {
+              "do": "l2cap_closed",
+              "channel": 1,
+              "out": [
+                "emit l2cap {\"channel\":1,\"state\":\"closed\",\"role\":\"peripheral\",\"peer\":\"11:22:33:44:55:66\",\"psm\":128,\"reason\":\"remote\"}"
+              ]
+            },
+            {
+              "do": "l2cap_close",
+              "call": 19,
+              "channel": 1,
+              "out": [
+                "reply 19 error not_found"
+              ]
+            },
+            {
+              "do": "l2cap_close",
+              "call": 20,
+              "channel": 2,
+              "out": [
+                "l2cap_close 2",
+                "emit l2cap {\"channel\":2,\"state\":\"closed\",\"role\":\"central\",\"peer\":\"AA:BB:CC:DD:EE:FF\",\"psm\":131,\"reason\":\"requested\"}",
+                "reply 20 ok {\"channel\":2,\"state\":\"closed\"}"
+              ]
+            },
+            {
+              "do": "l2cap_unpublish",
+              "call": 21,
+              "psm": 7,
+              "out": [
+                "reply 21 error not_found"
+              ]
+            },
+            {
+              "do": "l2cap_unpublish",
+              "call": 22,
+              "psm": 128,
+              "out": [
+                "l2cap_unpublish 128",
+                "reply 22 ok {\"psm\":128,\"published\":false}"
+              ]
+            },
+            {
+              "do": "l2cap_publish",
+              "call": 23,
+              "out": [
+                "l2cap_publish 1 4 false",
+                "timer l2cap_publish 4 10000"
+              ]
+            },
+            {
+              "do": "timer",
+              "kind": "l2cap_publish",
+              "token": 4,
+              "out": [
+                "reply 23 error l2cap_failed"
+              ]
+            },
+            {
+              "do": "timer",
+              "kind": "l2cap_publish",
+              "token": 4,
+              "out": [
+                "stale l2cap_publish timer 4"
+              ]
+            },
+            {
+              "do": "hold_count",
+              "out": [
+                "hold_count 0"
+              ]
+            }
+          ]
+        },
+        {
+          "name": "l2cap_ios_stream_error_and_adapter_off",
+          "platform": "ios",
+          "steps": [
+            {
+              "do": "adapter",
+              "state": "on",
+              "out": [
+                "emit adapter {\"state\":\"on\",\"epoch\":1}"
+              ]
+            },
+            {
+              "do": "l2cap_publish",
+              "call": 1,
+              "out": [
+                "l2cap_publish 1 1 false",
+                "timer l2cap_publish 1 10000"
+              ]
+            },
+            {
+              "do": "l2cap_published",
+              "epoch": 1,
+              "t": 1,
+              "psm": 192,
+              "out": [
+                "reply 1 ok {\"psm\":192,\"encrypted\":false}"
+              ]
+            },
+            {
+              "do": "l2cap_incoming",
+              "epoch": 1,
+              "psm": 192,
+              "peer": "6E400001-B5A3-F393-E0A9-E50E24DCCA9E",
+              "out": [
+                "emit l2cap {\"channel\":1,\"state\":\"open\",\"role\":\"peripheral\",\"peer\":\"6E400001-B5A3-F393-E0A9-E50E24DCCA9E\",\"psm\":192}",
+                "channel 1"
+              ]
+            },
+            {
+              "do": "l2cap_open",
+              "call": 2,
+              "id": "6E400009-B5A3-F393-E0A9-E50E24DCCA9E",
+              "psm": 37,
+              "out": [
+                "l2cap_open 1 2 6E400009-B5A3-F393-E0A9-E50E24DCCA9E 37 false",
+                "timer l2cap_open 2 10000"
+              ]
+            },
+            {
+              "do": "l2cap_publish",
+              "call": 3,
+              "encrypted": true,
+              "out": [
+                "l2cap_publish 1 2 true",
+                "timer l2cap_publish 2 10000"
+              ]
+            },
+            {
+              "do": "l2cap_closed",
+              "channel": 1,
+              "code": "stream error",
+              "out": [
+                "emit l2cap {\"channel\":1,\"state\":\"closed\",\"role\":\"peripheral\",\"peer\":\"6E400001-B5A3-F393-E0A9-E50E24DCCA9E\",\"psm\":192,\"reason\":\"error\",\"error\":\"stream error\"}"
+              ]
+            },
+            {
+              "do": "l2cap_incoming",
+              "epoch": 1,
+              "psm": 192,
+              "peer": "6E400001-B5A3-F393-E0A9-E50E24DCCA9E",
+              "out": [
+                "emit l2cap {\"channel\":3,\"state\":\"open\",\"role\":\"peripheral\",\"peer\":\"6E400001-B5A3-F393-E0A9-E50E24DCCA9E\",\"psm\":192}",
+                "channel 3"
+              ]
+            },
+            {
+              "do": "hold_count",
+              "out": [
+                "hold_count 1"
+              ]
+            },
+            {
+              "do": "adapter",
+              "state": "off",
+              "out": [
+                "l2cap_close 2",
+                "reply 2 error unavailable",
+                "l2cap_close 3",
+                "emit l2cap {\"channel\":3,\"state\":\"closed\",\"role\":\"peripheral\",\"peer\":\"6E400001-B5A3-F393-E0A9-E50E24DCCA9E\",\"psm\":192,\"reason\":\"adapter\"}",
+                "reply 3 error unavailable",
+                "l2cap_unpublish 192",
+                "emit adapter {\"state\":\"off\",\"epoch\":2}"
+              ]
+            },
+            {
+              "do": "hold_count",
+              "out": [
+                "hold_count 0"
+              ]
+            },
+            {
+              "do": "l2cap_opened",
+              "epoch": 1,
+              "channel": 2,
+              "out": [
+                "stale l2cap_opened epoch 1"
+              ]
+            },
+            {
+              "do": "l2cap_channels",
+              "call": 4,
+              "out": [
+                "reply 4 ok {\"channels\":[],\"published\":[]}"
+              ]
+            }
+          ]
+        },
+        {
+          "name": "advertising_sets_rules_start_stop_and_adapter_android",
+          "platform": "android",
+          "steps": [
+            {
+              "do": "adapter",
+              "state": "on",
+              "out": [
+                "emit adapter {\"state\":\"on\",\"epoch\":1}"
+              ]
+            },
+            {
+              "do": "advertise_set_start",
+              "call": 1,
+              "params": {
+                "legacy": true,
+                "anonymous": true
+              },
+              "out": [
+                "reply 1 error bad_value"
+              ]
+            },
+            {
+              "do": "advertise_set_start",
+              "call": 2,
+              "params": {
+                "legacy": true,
+                "connectable": true
+              },
+              "out": [
+                "reply 2 error bad_value"
+              ]
+            },
+            {
+              "do": "advertise_set_start",
+              "call": 3,
+              "params": {
+                "legacy": true,
+                "scannable": true,
+                "include_tx_power": true
+              },
+              "out": [
+                "reply 3 error bad_value"
+              ]
+            },
+            {
+              "do": "advertise_set_start",
+              "call": 4,
+              "params": {
+                "legacy": true,
+                "primary_phy": "coded"
+              },
+              "out": [
+                "reply 4 error bad_value"
+              ]
+            },
+            {
+              "do": "advertise_set_start",
+              "call": 5,
+              "params": {
+                "connectable": true,
+                "scannable": true
+              },
+              "out": [
+                "reply 5 error bad_value"
+              ]
+            },
+            {
+              "do": "advertise_set_start",
+              "call": 6,
+              "params": {
+                "connectable": true,
+                "anonymous": true
+              },
+              "out": [
+                "reply 6 error bad_value"
+              ]
+            },
+            {
+              "do": "advertise_set_start",
+              "call": 7,
+              "params": {
+                "connectable": true,
+                "periodic_interval_ms": 100
+              },
+              "out": [
+                "reply 7 error bad_value"
+              ]
+            },
+            {
+              "do": "advertise_set_start",
+              "call": 8,
+              "params": {
+                "periodic_manufacturer_id": 1,
+                "periodic_manufacturer_hex": "01"
+              },
+              "out": [
+                "reply 8 error bad_value"
+              ]
+            },
+            {
+              "do": "advertise_set_start",
+              "call": 9,
+              "params": {
+                "response_include_name": true
+              },
+              "out": [
+                "reply 9 error bad_value"
+              ]
+            },
+            {
+              "do": "advertise_set_start",
+              "call": 10,
+              "params": {
+                "manufacturer_id": 76
+              },
+              "out": [
+                "reply 10 error bad_value"
+              ]
+            },
+            {
+              "do": "advertise_set_start",
+              "call": 11,
+              "params": {
+                "service_data_uuid": "feaa",
+                "service_data_hex": "zz"
+              },
+              "out": [
+                "reply 11 error bad_value"
+              ]
+            },
+            {
+              "do": "advertise_set_start",
+              "call": 12,
+              "params": {
+                "services": "nope"
+              },
+              "out": [
+                "reply 12 error bad_value"
+              ]
+            },
+            {
+              "do": "advertise_set_start",
+              "call": 13,
+              "params": {
+                "connectable": true,
+                "primary_phy": "coded",
+                "secondary_phy": "2m",
+                "interval_ms": 160,
+                "tx_power_dbm": -7,
+                "services": "180d",
+                "include_name": true,
+                "tx_power_data": true,
+                "seconds": 30,
+                "max_events": 0
+              },
+              "out": [
+                "advertise_set_start 1 1 {\"legacy\":false,\"connectable\":true,\"scannable\":false,\"anonymous\":false,\"includeTxPower\":false,\"primaryPhy\":\"coded\",\"secondaryPhy\":\"2m\",\"intervalMs\":160,\"txPowerDbm\":-7,\"data\":{\"services\":[\"0000180d-0000-1000-8000-00805f9b34fb\"],\"includeName\":true,\"manufacturerId\":null,\"manufacturerHex\":null,\"serviceDataUuid\":null,\"serviceDataHex\":null,\"txPowerLevel\":true},\"response\":null,\"periodic\":null,\"seconds\":30,\"maxEvents\":0}",
+                "timer advertise_set 1 10000"
+              ]
+            },
+            {
+              "do": "hold_count",
+              "out": [
+                "hold_count 0"
+              ]
+            },
+            {
+              "do": "advertise_set_started",
+              "epoch": 1,
+              "set": 1,
+              "tx_power": -7,
+              "out": [
+                "emit advertising_set {\"set\":1,\"state\":\"started\",\"tx_power\":-7}",
+                "reply 13 ok {\"set\":1,\"tx_power\":-7}"
+              ]
+            },
+            {
+              "do": "advertise_set_started",
+              "epoch": 1,
+              "set": 1,
+              "tx_power": -7,
+              "out": [
+                "stale advertise_set_started 1"
+              ]
+            },
+            {
+              "do": "hold_count",
+              "out": [
+                "hold_count 1"
+              ]
+            },
+            {
+              "do": "advertise_set_start",
+              "call": 14,
+              "params": {
+                "legacy": true,
+                "connectable": true,
+                "scannable": true,
+                "response_services": "180f",
+                "response_manufacturer_id": 65535,
+                "response_manufacturer_hex": "AbCd"
+              },
+              "out": [
+                "advertise_set_start 1 2 {\"legacy\":true,\"connectable\":true,\"scannable\":true,\"anonymous\":false,\"includeTxPower\":false,\"primaryPhy\":\"1m\",\"secondaryPhy\":\"1m\",\"intervalMs\":null,\"txPowerDbm\":null,\"data\":{\"services\":[],\"includeName\":false,\"manufacturerId\":null,\"manufacturerHex\":null,\"serviceDataUuid\":null,\"serviceDataHex\":null,\"txPowerLevel\":false},\"response\":{\"services\":[\"0000180f-0000-1000-8000-00805f9b34fb\"],\"includeName\":false,\"manufacturerId\":65535,\"manufacturerHex\":\"abcd\",\"serviceDataUuid\":null,\"serviceDataHex\":null},\"periodic\":null,\"seconds\":0,\"maxEvents\":0}",
+                "timer advertise_set 2 10000"
+              ]
+            },
+            {
+              "do": "advertise_set_start",
+              "call": 15,
+              "params": {
+                "secondary_phy": "coded",
+                "periodic_interval_ms": 200,
+                "periodic_include_tx_power": true,
+                "periodic_service_data_uuid": "feaa",
+                "periodic_service_data_hex": "10FF"
+              },
+              "out": [
+                "advertise_set_start 1 3 {\"legacy\":false,\"connectable\":false,\"scannable\":false,\"anonymous\":false,\"includeTxPower\":false,\"primaryPhy\":\"1m\",\"secondaryPhy\":\"coded\",\"intervalMs\":null,\"txPowerDbm\":null,\"data\":{\"services\":[],\"includeName\":false,\"manufacturerId\":null,\"manufacturerHex\":null,\"serviceDataUuid\":null,\"serviceDataHex\":null,\"txPowerLevel\":false},\"response\":null,\"periodic\":{\"intervalMs\":200,\"includeTxPower\":true,\"data\":{\"manufacturerId\":null,\"manufacturerHex\":null,\"serviceDataUuid\":\"0000feaa-0000-1000-8000-00805f9b34fb\",\"serviceDataHex\":\"10ff\"}},\"seconds\":0,\"maxEvents\":0}",
+                "timer advertise_set 3 10000"
+              ]
+            },
+            {
+              "do": "advertise_set_started",
+              "epoch": 1,
+              "set": 3,
+              "tx_power": 1,
+              "code": "FEATURE_UNSUPPORTED",
+              "out": [
+                "reply 15 error advertise_failed"
+              ]
+            },
+            {
+              "do": "timer",
+              "kind": "advertise_set",
+              "token": 2,
+              "out": [
+                "advertise_set_stop 2",
+                "reply 14 error advertise_failed"
+              ]
+            },
+            {
+              "do": "timer",
+              "kind": "advertise_set",
+              "token": 1,
+              "out": [
+                "stale advertise_set timer 1"
+              ]
+            },
+            {
+              "do": "port",
+              "refuse": {
+                "advertise_set_start": "platform_limit this device has no extended advertising (BluetoothAdapter.isLeExtendedAdvertisingSupported is false)"
+              },
+              "out": []
+            },
+            {
+              "do": "advertise_set_start",
+              "call": 16,
+              "params": {},
+              "out": [
+                "advertise_set_start 1 4 {\"legacy\":false,\"connectable\":false,\"scannable\":false,\"anonymous\":false,\"includeTxPower\":false,\"primaryPhy\":\"1m\",\"secondaryPhy\":\"1m\",\"intervalMs\":null,\"txPowerDbm\":null,\"data\":{\"services\":[],\"includeName\":false,\"manufacturerId\":null,\"manufacturerHex\":null,\"serviceDataUuid\":null,\"serviceDataHex\":null,\"txPowerLevel\":false},\"response\":null,\"periodic\":null,\"seconds\":0,\"maxEvents\":0}",
+                "reply 16 error platform_limit"
+              ]
+            },
+            {
+              "do": "advertise_set_start",
+              "call": 17,
+              "params": {},
+              "out": [
+                "advertise_set_start 1 5 {\"legacy\":false,\"connectable\":false,\"scannable\":false,\"anonymous\":false,\"includeTxPower\":false,\"primaryPhy\":\"1m\",\"secondaryPhy\":\"1m\",\"intervalMs\":null,\"txPowerDbm\":null,\"data\":{\"services\":[],\"includeName\":false,\"manufacturerId\":null,\"manufacturerHex\":null,\"serviceDataUuid\":null,\"serviceDataHex\":null,\"txPowerLevel\":false},\"response\":null,\"periodic\":null,\"seconds\":0,\"maxEvents\":0}",
+                "timer advertise_set 5 10000"
+              ]
+            },
+            {
+              "do": "expire",
+              "call": 17,
+              "out": []
+            },
+            {
+              "do": "advertise_set_started",
+              "epoch": 1,
+              "set": 5,
+              "tx_power": 0,
+              "out": [
+                "advertise_set_stop 5",
+                "reply 17 error timeout"
+              ]
+            },
+            {
+              "do": "advertise_set_stopped",
+              "epoch": 1,
+              "set": 1,
+              "out": [
+                "emit advertising_set {\"set\":1,\"state\":\"stopped\",\"reason\":\"elapsed\"}"
+              ]
+            },
+            {
+              "do": "advertise_set_stopped",
+              "epoch": 1,
+              "set": 1,
+              "out": [
+                "stale advertise_set_stopped 1"
+              ]
+            },
+            {
+              "do": "advertise_set_stop",
+              "call": 18,
+              "set": 1,
+              "out": [
+                "reply 18 error not_found"
+              ]
+            },
+            {
+              "do": "advertise_set_start",
+              "call": 19,
+              "params": {
+                "scannable": true
+              },
+              "out": [
+                "advertise_set_start 1 6 {\"legacy\":false,\"connectable\":false,\"scannable\":true,\"anonymous\":false,\"includeTxPower\":false,\"primaryPhy\":\"1m\",\"secondaryPhy\":\"1m\",\"intervalMs\":null,\"txPowerDbm\":null,\"data\":{\"services\":[],\"includeName\":false,\"manufacturerId\":null,\"manufacturerHex\":null,\"serviceDataUuid\":null,\"serviceDataHex\":null,\"txPowerLevel\":false},\"response\":null,\"periodic\":null,\"seconds\":0,\"maxEvents\":0}",
+                "timer advertise_set 6 10000"
+              ]
+            },
+            {
+              "do": "advertise_set_stop",
+              "call": 20,
+              "set": 6,
+              "out": [
+                "advertise_set_stop 6",
+                "reply 19 error advertise_failed",
+                "reply 20 ok {\"set\":6,\"state\":\"stopped\"}"
+              ]
+            },
+            {
+              "do": "advertise_set_start",
+              "call": 21,
+              "params": {},
+              "out": [
+                "advertise_set_start 1 7 {\"legacy\":false,\"connectable\":false,\"scannable\":false,\"anonymous\":false,\"includeTxPower\":false,\"primaryPhy\":\"1m\",\"secondaryPhy\":\"1m\",\"intervalMs\":null,\"txPowerDbm\":null,\"data\":{\"services\":[],\"includeName\":false,\"manufacturerId\":null,\"manufacturerHex\":null,\"serviceDataUuid\":null,\"serviceDataHex\":null,\"txPowerLevel\":false},\"response\":null,\"periodic\":null,\"seconds\":0,\"maxEvents\":0}",
+                "timer advertise_set 7 10000"
+              ]
+            },
+            {
+              "do": "advertise_set_started",
+              "epoch": 1,
+              "set": 7,
+              "tx_power": -1,
+              "out": [
+                "emit advertising_set {\"set\":7,\"state\":\"started\",\"tx_power\":-1}",
+                "reply 21 ok {\"set\":7,\"tx_power\":-1}"
+              ]
+            },
+            {
+              "do": "advertise_set_stop",
+              "call": 22,
+              "set": 7,
+              "out": [
+                "advertise_set_stop 7",
+                "emit advertising_set {\"set\":7,\"state\":\"stopped\",\"reason\":\"requested\"}",
+                "reply 22 ok {\"set\":7,\"state\":\"stopped\"}"
+              ]
+            },
+            {
+              "do": "advertise_set_start",
+              "call": 23,
+              "params": {},
+              "out": [
+                "advertise_set_start 1 8 {\"legacy\":false,\"connectable\":false,\"scannable\":false,\"anonymous\":false,\"includeTxPower\":false,\"primaryPhy\":\"1m\",\"secondaryPhy\":\"1m\",\"intervalMs\":null,\"txPowerDbm\":null,\"data\":{\"services\":[],\"includeName\":false,\"manufacturerId\":null,\"manufacturerHex\":null,\"serviceDataUuid\":null,\"serviceDataHex\":null,\"txPowerLevel\":false},\"response\":null,\"periodic\":null,\"seconds\":0,\"maxEvents\":0}",
+                "timer advertise_set 8 10000"
+              ]
+            },
+            {
+              "do": "advertise_set_started",
+              "epoch": 1,
+              "set": 8,
+              "tx_power": -1,
+              "out": [
+                "emit advertising_set {\"set\":8,\"state\":\"started\",\"tx_power\":-1}",
+                "reply 23 ok {\"set\":8,\"tx_power\":-1}"
+              ]
+            },
+            {
+              "do": "advertise_set_start",
+              "call": 24,
+              "params": {},
+              "out": [
+                "advertise_set_start 1 9 {\"legacy\":false,\"connectable\":false,\"scannable\":false,\"anonymous\":false,\"includeTxPower\":false,\"primaryPhy\":\"1m\",\"secondaryPhy\":\"1m\",\"intervalMs\":null,\"txPowerDbm\":null,\"data\":{\"services\":[],\"includeName\":false,\"manufacturerId\":null,\"manufacturerHex\":null,\"serviceDataUuid\":null,\"serviceDataHex\":null,\"txPowerLevel\":false},\"response\":null,\"periodic\":null,\"seconds\":0,\"maxEvents\":0}",
+                "timer advertise_set 9 10000"
+              ]
+            },
+            {
+              "do": "adapter",
+              "state": "off",
+              "out": [
+                "emit advertising_set {\"set\":8,\"state\":\"stopped\",\"reason\":\"adapter\"}",
+                "reply 24 error unavailable",
+                "emit adapter {\"state\":\"off\",\"epoch\":2}"
+              ]
+            },
+            {
+              "do": "hold_count",
+              "out": [
+                "hold_count 0"
+              ]
+            },
+            {
+              "do": "advertise_set_start",
+              "call": 25,
+              "params": {},
+              "out": [
+                "reply 25 error unavailable"
+              ]
+            }
+          ]
+        },
+        {
+          "name": "advertising_sets_ios_is_a_platform_limit",
+          "platform": "ios",
+          "steps": [
+            {
+              "do": "adapter",
+              "state": "on",
+              "out": [
+                "emit adapter {\"state\":\"on\",\"epoch\":1}"
+              ]
+            },
+            {
+              "do": "advertise_set_start",
+              "call": 1,
+              "params": {
+                "connectable": true
+              },
+              "out": [
+                "reply 1 error platform_limit"
+              ]
+            },
+            {
+              "do": "advertise_set_stop",
+              "call": 2,
+              "set": 1,
+              "out": [
+                "reply 2 error not_found"
+              ]
+            }
+          ]
+        }
+      ]
     }
   }
 }

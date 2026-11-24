@@ -231,11 +231,19 @@ public final class BleExtension implements NativeExtension, BleCore.Port {
                 return "scan";
             case "advertise_start":
             case "advertise_stop":
+            case "advertise_set_start":
+            case "advertise_set_stop":
                 return "advertise";
             case "service_add":
             case "service_remove":
             case "notify":
+            case "respond":
             case "central_drop":
+            case "l2cap_publish":
+            case "l2cap_unpublish":
+            case "l2cap_open":
+            case "l2cap_send":
+            case "l2cap_close":
             case "connect":
             case "raw":
             case "priority":
@@ -326,6 +334,17 @@ public final class BleExtension implements NativeExtension, BleCore.Port {
             if (v != null) o.put(k, v);
         }
         return o;
+    }
+
+    /** The advertise_set_start parameters, typed as the core reads them (the manifest checked each type). */
+    private static Map<String, Object> setParams(ExtCall call) {
+        Map<String, Object> raw = BleCore.obj();
+        for (Map.Entry<String, Object> e : call.params.entrySet()) {
+            Object v = e.getValue();
+            if (v instanceof Number) raw.put(e.getKey(), ((Number) v).intValue());
+            else if (v instanceof Boolean || v instanceof String) raw.put(e.getKey(), v);
+        }
+        return raw;
     }
 
     private static int num(ExtCall call, String name, int dflt) {
@@ -484,6 +503,34 @@ public final class BleExtension implements NativeExtension, BleCore.Port {
             case "keep_alive":
                 core.keepAlive(c, flag(call, "enabled", false), false);
                 return;
+            case "respond":
+                core.respond(c, num(call, "request", 0), str(call, "status"), str(call, "hex"), str(call, "b64"), str(call, "text"),
+                        num(call, "offset", -1));
+                return;
+            case "l2cap_publish":
+                core.l2capPublish(c, flag(call, "encrypted", true));
+                return;
+            case "l2cap_unpublish":
+                core.l2capUnpublish(c, num(call, "psm", 0));
+                return;
+            case "l2cap_open":
+                core.l2capOpen(c, id, num(call, "psm", 0), flag(call, "encrypted", true), num(call, "seconds", 0));
+                return;
+            case "l2cap_send":
+                core.l2capSend(c, num(call, "channel", 0), str(call, "hex"), str(call, "b64"), str(call, "text"));
+                return;
+            case "l2cap_close":
+                core.l2capClose(c, num(call, "channel", 0));
+                return;
+            case "l2cap_channels":
+                core.l2capChannels(c);
+                return;
+            case "advertise_set_start":
+                core.advertiseSetStart(c, setParams(call));
+                return;
+            case "advertise_set_stop":
+                core.advertiseSetStop(c, num(call, "set", 0));
+                return;
             default:
                 calls.remove(c);
                 reply.reply(ExtResult.error("not_registered", call.route));
@@ -624,6 +671,46 @@ public final class BleExtension implements NativeExtension, BleCore.Port {
     @Override
     public String keepAlive(boolean start, int hold) {
         return radio.keepAlive(start, hold, startedActivities > 0);
+    }
+
+    @Override
+    public String attRespond(int epoch, int request, String status, int offset, byte[] data) {
+        return radio.attRespond(epoch, request, status, offset, data);
+    }
+
+    @Override
+    public String l2capPublish(int epoch, int t, boolean encrypted) {
+        return radio.l2capPublish(epoch, t, encrypted);
+    }
+
+    @Override
+    public void l2capUnpublish(int psm) {
+        radio.l2capUnpublish(psm);
+    }
+
+    @Override
+    public String l2capOpen(int epoch, int channel, String id, int psm, boolean encrypted) {
+        return radio.l2capOpen(epoch, channel, id, psm, encrypted);
+    }
+
+    @Override
+    public String l2capSend(int channel, byte[] data) {
+        return radio.l2capSend(channel, data);
+    }
+
+    @Override
+    public void l2capClose(int channel) {
+        radio.l2capClose(channel);
+    }
+
+    @Override
+    public String advertiseSetStart(int epoch, int set, Map<String, Object> params) {
+        return radio.advertiseSetStart(epoch, set, params);
+    }
+
+    @Override
+    public void advertiseSetStop(int set) {
+        radio.advertiseSetStop(set);
     }
 
     @Override

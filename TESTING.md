@@ -2,14 +2,14 @@
 
 ## What runs without hardware
 
-1. The shared core. `tests/vectors/ble_core.json` holds the rules both platforms share: links and their generations, the operation queue, write limits and chunking, permissions by Android API level and role, scan filters and options, the journal and the previous launch, the server table and notify queue, advertising and keep-alive. Each row runs against `BleCore.java` on the JVM and `BleCore.swift` with `swiftc`. Each named mutation must turn its scenario red, so the vectors keep guarding the rule:
+1. The shared core. `tests/vectors/ble_core.json` holds the rules both platforms share: links and their generations, the operation queue, write limits and chunking, permissions by Android API level and role, scan filters and options, the journal and the previous launch, the server table and notify queue, requests the page answers, L2CAP channels, advertising and advertising sets, and keep-alive. Each row runs against `BleCore.java` on the JVM and `BleCore.swift` with `swiftc`. Each named mutation must turn its scenario red, so the vectors keep guarding the rule:
 
    ```sh
    python3 -I tests/run.py jvm     # JDK 17 or later
    python3 -I tests/run.py swift   # macOS with Swift
    ```
 
-2. The route contract. `tests/route/plan-ios.json` and `tests/route/plan-android.json` call each of the 32 routes once from a page in the built app. `tests/route/check_routes.py` checks every answer against the documented envelope, error codes and platform limits (see `tests/route/README.md`). The iOS simulator and the Android emulator have no Bluetooth peer, so this proves state, permission, a missing or unsupported radio, a device that is not connected, and the platform limits. It does not prove a radio.
+2. The route contract. `tests/route/plan-ios.json` and `tests/route/plan-android.json` call each of the 41 routes once from a page in the built app. `tests/route/check_routes.py` checks every answer against the documented envelope, error codes and platform limits (see `tests/route/README.md`). The iOS simulator and the Android emulator have no Bluetooth peer, so this proves state, permission, a missing or unsupported radio, a device that is not connected, and the platform limits. It does not prove a radio.
 
 3. A compile of both platforms in a V3 app with the extension included: the iOS simulator app and the Android Gradle variant.
 
@@ -29,5 +29,8 @@ Neither the simulator nor the emulator has a Bluetooth radio. Run these on real 
 10. **Peripheral role.** `service_add`, `advertise_start` with a name and a service, and connect from the second phone. Check `centrals`, `value_set`, `notify` to the subscribed central, and, on Android, `central_drop`.
 11. **Server posts.** Set `server` on `connect` and `subscribe` to an HTTPS endpoint you own. Check the `ble_state` and `ble_data` posts. Go offline, change the value, come back online, and check that the queued posts arrive.
 12. **The previous launch.** Change values, terminate the app, relaunch, and read `events` with `run=previous`.
+13. **Requests the page answers.** Add a characteristic with flags `rwa`. From the second phone read it, write it with response, and (Android) write it without response and with a long (prepared) write. Check each `att_request`, answer with `respond` (`ok` with a value, then `insufficient_authorization`), and check what the second phone receives. Leave one request unanswered and check `expired` after 25 seconds.
+14. **L2CAP.** On one phone `l2cap_publish`; on the other `connect` (iOS) and `l2cap_open` with the `psm`. Send both ways with `l2cap_send` and check `l2cap_data`. Close from each side and check the `l2cap` event's `reason`. On Android 9 or earlier, check `platform_limit`.
+15. **Advertising sets (Android).** `advertise_set_start` an extended set on the 2M secondary PHY, a legacy scannable set with a scan response, and a periodic set where the phone supports it. Scan from the second phone (nRF Connect shows extended and periodic advertising). Check `advertising_set` events, `seconds` ending a set, and `platform_limit` for a feature the controller lacks. On iOS, check `platform_limit`.
 
 Record the phone models, OS versions and the peripheral used with each result.

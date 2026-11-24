@@ -22,7 +22,7 @@ import Foundation
 /// is isolated to the main actor (`@MainActor CBPeripheralManagerDelegate`, SE-0470) and each witness
 /// checks at run time that it was called on the main queue.
 @MainActor
-final class BlePeripheralRadio: NSObject, @MainActor CBPeripheralManagerDelegate {
+final class BlePeripheralRadio: NSObject, @MainActor CBPeripheralManagerDelegate, @MainActor StreamDelegate {
     private let core: BleCore
     private let restoreIdentifier: String
     private let file: URL
@@ -46,6 +46,8 @@ final class BlePeripheralRadio: NSObject, @MainActor CBPeripheralManagerDelegate
     private var launchedWithFile = false
     private var settled = false
     private var readyWaiters: [BleCentralRadio.Waiter] = []
+    /// Requests the page answers (characteristics with flag a), by the core's request number.
+    private var asked: [Int: (epoch: Int, request: CBATTRequest, read: Bool)] = [:]
 
     init(core: BleCore, restoreIdentifier: String, dataDirectory: URL, log: @escaping (String) -> Void) {
         self.core = core
@@ -135,6 +137,11 @@ final class BlePeripheralRadio: NSObject, @MainActor CBPeripheralManagerDelegate
         case "not_permitted": return read ? .readNotPermitted : .writeNotPermitted
         case "invalid_offset": return .invalidOffset
         case "invalid_length": return .invalidAttributeValueLength
+        case "insufficient_authentication": return .insufficientAuthentication
+        case "insufficient_authorization": return .insufficientAuthorization
+        case "insufficient_encryption": return .insufficientEncryption
+        case "not_supported": return .requestNotSupported
+        case "insufficient_resources": return .insufficientResources
         default: return .unlikelyError
         }
     }
@@ -194,6 +201,127 @@ final class BlePeripheralRadio: NSObject, @MainActor CBPeripheralManagerDelegate
         guard let to = centrals[central] else { return "unknown_device the central is no longer subscribed" }
         // iOS sends a notification or an indication by the characteristic's properties and the subscription.
         return m.updateValue(Data(data), for: c, onSubscribedCentrals: [to]) ? nil : "full"
+    }
+
+    /// The page's answer to request `request` (or the core's unlikely when the page did not answer in time).
+    /// A read's value starts at the request's own offset: CBATTRequest carries the offset itself.
+    func attRespond(_ epoch: Int, _ request: Int, _ status: String, _ offset: Int, _ data: [UInt8]?) -> String? {
+        guard let q = asked.removeValue(forKey: request), q.epoch == epoch, let m = manager, m.state == .poweredOn else {
+            return "unavailable the request is no longer open on the radio (Bluetooth went off)"
+        }
+        if let d = data { q.request.value = Data(d) }
+        m.respond(to: q.request, withResult: BlePeripheralRadio.attError(status, read: q.read))
+        return nil
+    }
+
+    // MARK: L2CAP channels
+
+    /// Bytes per read of a channel's input stream: a longer arrival is several l2cap_data records.
+    static let l2capRead = 2048
+
+    /// One open channel (either role): its streams run on the main run loop with this radio as delegate.
+    final class Chan {
+        let n: Int
+        let channel: CBL2CAPChannel
+        /// Bytes the output stream has not taken yet; sent as it reports space.
+        var pendingOut: [UInt8] = []
+
+        init(_ n: Int, _ channel: CBL2CAPChannel) {
+            self.n = n
+            self.channel = channel
+        }
+    }
+
+    /// Publishes in flight, in order: didPublishL2CAPChannel answers them one by one.
+    private var publishing: [(epoch: Int, t: Int)] = []
+    private var chans: [Int: Chan] = [:]
+
+    func l2capPublish(_ epoch: Int, _ t: Int, _ encrypted: Bool) -> String? {
+        guard let m = manager, m.state == .poweredOn else { return "unavailable Bluetooth is \(stateName ?? "unknown")" }
+        liveEpoch = epoch
+        publishing.append((epoch, t))
+        m.publishL2CAPChannel(withEncryption: encrypted)
+        return nil
+    }
+
+    func l2capUnpublish(_ psm: Int) {
+        if on { manager?.unpublishL2CAPChannel(CBL2CAPPSM(psm)) }
+    }
+
+    /// Takes an open channel as number `n`: its streams are opened on the main run loop.
+    func adopt(_ n: Int, _ channel: CBL2CAPChannel) {
+        let c = Chan(n, channel)
+        chans[n] = c
+        for s in [channel.inputStream as Stream?, channel.outputStream as Stream?] {
+            guard let s = s else { continue }
+            s.delegate = self
+            s.schedule(in: .main, forMode: .common)
+            s.open()
+        }
+    }
+
+    private static func closeStreams(_ channel: CBL2CAPChannel) {
+        for s in [channel.inputStream as Stream?, channel.outputStream as Stream?] {
+            guard let s = s else { continue }
+            s.delegate = nil
+            s.close()
+            s.remove(from: .main, forMode: .common)
+        }
+    }
+
+    func l2capSend(_ n: Int, _ data: [UInt8]) -> String? {
+        guard let c = chans[n] else { return "not_found the channel is closed" }
+        c.pendingOut += data
+        flush(c)
+        return nil
+    }
+
+    func l2capClose(_ n: Int) {
+        guard let c = chans.removeValue(forKey: n) else { return }
+        BlePeripheralRadio.closeStreams(c.channel)
+    }
+
+    private func flush(_ c: Chan) {
+        guard let out = c.channel.outputStream else { return }
+        while !c.pendingOut.isEmpty && out.hasSpaceAvailable {
+            let k = c.pendingOut.withUnsafeBufferPointer { out.write($0.baseAddress!, maxLength: $0.count) }
+            if k <= 0 { break }
+            c.pendingOut.removeFirst(k)
+        }
+    }
+
+    /// The channel ended on the platform's side; nothing when this side closed it first.
+    private func ended(_ c: Chan, _ code: String?) {
+        guard chans[c.n] === c else { return }
+        chans.removeValue(forKey: c.n)
+        BlePeripheralRadio.closeStreams(c.channel)
+        core.l2capClosed(c.n, code)
+    }
+
+    func stream(_ aStream: Stream, handle eventCode: Stream.Event) {
+        dispatchPrecondition(condition: .onQueue(.main))
+        guard let c = chans.values.first(where: { $0.channel.inputStream === aStream || $0.channel.outputStream === aStream }) else {
+            return
+        }
+        switch eventCode {
+        case .hasBytesAvailable:
+            guard let input = aStream as? InputStream else { return }
+            var buf = [UInt8](repeating: 0, count: BlePeripheralRadio.l2capRead)
+            while chans[c.n] === c && input.hasBytesAvailable {
+                let k = input.read(&buf, maxLength: buf.count)
+                if k <= 0 { break }
+                core.l2capData(c.n, BleCore.hex(Array(buf[0..<k])))
+            }
+        case .hasSpaceAvailable:
+            flush(c)
+        case .errorOccurred:
+            let e = aStream.streamError.map { $0 as NSError }
+            ended(c, e.map { "error \($0.domain) \($0.code)" } ?? "error")
+        case .endEncountered:
+            ended(c, nil)
+        default:
+            break
+        }
     }
 
     // MARK: advertiser
@@ -333,6 +461,8 @@ final class BlePeripheralRadio: NSObject, @MainActor CBPeripheralManagerDelegate
             adding = [:]
             centrals = [:]
             advertiseToken = 0
+            asked = [:]
+            publishing = []
         }
         if !settled && s != .unknown {
             settled = true
@@ -399,6 +529,10 @@ final class BlePeripheralRadio: NSObject, @MainActor CBPeripheralManagerDelegate
         }
         let r = core.readRequest(liveEpoch, id, BlePeripheralRadio.mtu(request.central), k, request.offset)
         let status = r["status"] as? String ?? "unlikely"
+        if status == "pending", let n = r["request"] as? Int {
+            asked[n] = (liveEpoch, request, true)
+            return
+        }
         if status == "ok", let hex = r["hex"] as? String, let bytes = BleCore.fromHex(hex) { request.value = Data(bytes) }
         peripheral.respond(to: request, withResult: BlePeripheralRadio.attError(status, read: true))
     }
@@ -417,6 +551,24 @@ final class BlePeripheralRadio: NSObject, @MainActor CBPeripheralManagerDelegate
         }
         // iOS delivers one batch and takes one answer, for the first request (all or none).
         let r = core.writeRequests(liveEpoch, id, BlePeripheralRadio.mtu(first.central), reqs, false)
+        if r.hasPrefix("pending "), let n = Int(r.dropFirst(8)) {
+            asked[n] = (liveEpoch, first, false)
+            return
+        }
         peripheral.respond(to: first, withResult: BlePeripheralRadio.attError(r, read: false))
+    }
+
+    func peripheralManager(_ peripheral: CBPeripheralManager, didPublishL2CAPChannel PSM: CBL2CAPPSM, error: Error?) {
+        dispatchPrecondition(condition: .onQueue(.main))
+        guard !publishing.isEmpty else { return }
+        let p = publishing.removeFirst()
+        core.l2capPublished(p.epoch, p.t, Int(PSM), error.map { "error \(($0 as NSError).domain) \(($0 as NSError).code)" })
+    }
+
+    func peripheralManager(_ peripheral: CBPeripheralManager, didOpen channel: CBL2CAPChannel?, error: Error?) {
+        dispatchPrecondition(condition: .onQueue(.main))
+        guard let ch = channel, error == nil else { return }
+        let n = core.l2capIncoming(liveEpoch, Int(ch.psm), ch.peer.identifier.uuidString)
+        if n >= 0 { adopt(n, ch) }
     }
 }

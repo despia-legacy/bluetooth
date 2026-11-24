@@ -100,6 +100,32 @@ public final class BleCore {
 
         /** iOS: write the server snapshot (null: delete the file). */
         void persist(Map<String, Object> snapshot);
+
+        /**
+         * Answer the central's request {@code request} (a read or write of a characteristic with flag
+         * a) with an ATT outcome ({@link #ATT_STATUSES}), the offset and, for a read, the value. null when
+         * handed over, else "code message".
+         */
+        String attRespond(int epoch, int request, String status, int offset, byte[] data);
+
+        /** Publish an L2CAP channel as token {@code t}. null when accepted (l2capPublished follows). */
+        String l2capPublish(int epoch, int t, boolean encrypted);
+
+        void l2capUnpublish(int psm);
+
+        /** Open channel {@code channel} to {@code id} on {@code psm}. null when accepted (l2capOpened follows). */
+        String l2capOpen(int epoch, int channel, String id, int psm, boolean encrypted);
+
+        /** Queue bytes on an open channel. null when accepted, else "code message". */
+        String l2capSend(int channel, byte[] data);
+
+        /** Close a channel or abandon its opening; no callback follows. */
+        void l2capClose(int channel);
+
+        /** Android: start advertising set {@code set}. null when accepted (advertiseSetStarted follows). */
+        String advertiseSetStart(int epoch, int set, Map<String, Object> params);
+
+        void advertiseSetStop(int set);
     }
 
     public static final int WRITE_MAX = 512;
@@ -627,6 +653,13 @@ public final class BleCore {
             pendingRequests.subList(0, n).clear();
             port.emit("request", obj("records", batch, "dropped", dropped));
             if (!pendingRequests.isEmpty()) scheduleFlush();
+        }
+        if (!pendingL2cap.isEmpty()) {
+            int n = Math.min(BATCH_MAX, pendingL2cap.size());
+            List<Object> batch = new ArrayList<>(pendingL2cap.subList(0, n));
+            pendingL2cap.subList(0, n).clear();
+            port.emit("l2cap_data", obj("records", batch, "dropped", dropped));
+            if (!pendingL2cap.isEmpty()) scheduleFlush();
         }
     }
 
@@ -1638,7 +1671,8 @@ public final class BleCore {
      * The {@code chars} grammar of service_add: characteristics separated by commas, each
      * {@code uuid~flags} or {@code uuid~flags~hex}. Flags r (read), w (write), c (write without
      * response), n (notify), i (indicate), R (read needs encryption, with r), W (write needs
-     * encryption, with w or c). At most 16; equal UUIDs are numbered in order. Null when malformed.
+     * encryption, with w or c), a (the page answers its reads and writes: att_request and respond,
+     * with r, w or c). At most 16; equal UUIDs are numbered in order. Null when malformed.
      */
     public static List<Map<String, Object>> parseChars(String spec) {
         List<Map<String, Object>> out = new ArrayList<>();
@@ -1652,13 +1686,14 @@ public final class BleCore {
             if (u == null || flags.isEmpty()) return null;
             for (int i = 0; i < flags.length(); i++) {
                 char c = flags.charAt(i);
-                if ("rwcniRW".indexOf(c) < 0 || flags.indexOf(c) != i) return null;
+                if ("rwcniRWa".indexOf(c) < 0 || flags.indexOf(c) != i) return null;
             }
             boolean any = false;
             for (char c : new char[]{'r', 'w', 'c', 'n', 'i'}) any |= flags.indexOf(c) >= 0;
             if (!any) return null;
             if (flags.indexOf('R') >= 0 && flags.indexOf('r') < 0) return null;
             if (flags.indexOf('W') >= 0 && flags.indexOf('w') < 0 && flags.indexOf('c') < 0) return null;
+            if (flags.indexOf('a') >= 0 && flags.indexOf('r') < 0 && flags.indexOf('w') < 0 && flags.indexOf('c') < 0) return null;
             String start = null;
             if (f.length == 3) {
                 byte[] b = fromHex(f[2]);
@@ -2031,6 +2066,7 @@ public final class BleCore {
     private void endCentral(String central, String reason) {
         for (Service s : services.values()) for (Chr c : s.chars) c.subscribers.remove(central);
         prepared.keySet().removeIf(k -> k.startsWith(central + "|"));
+        dropRequests(central, reason);
         centrals.remove(central);
         record("central", obj("central", central, "state", "disconnected", "reason", reason));
         updateHold();
@@ -2078,13 +2114,23 @@ public final class BleCore {
         return mode == null ? "0000" : "indicate".equals(mode) ? "0200" : "0100";
     }
 
-    /** A read request, answered from the value store: {status, hex}. Status ok, not_found, not_permitted, invalid_offset, unlikely or stale. */
+    /**
+     * A read request, answered from the value store: {status, hex}. Status ok, not_found, not_permitted,
+     * invalid_offset, unlikely or stale; for a characteristic with flag a, pending and the request
+     * number: the page answers it with respond (or the core answers unlikely after ATT_ANSWER_MS).
+     */
     public Map<String, Object> readRequest(int e, String central, int mtu, String key, int offset) {
         if (!serverCurrent(e, "read_request")) return obj("status", "stale");
         Chr c = chrOf(key);
         if (c == null) return obj("status", "not_found");
         seen(central, mtu);
         if (!c.has('r')) return obj("status", "not_permitted");
+        if (c.has('a')) {
+            String[] p = key.split("[#/]");
+            Map<String, Object> view = obj("kind", "read", "central", central, "service", p[0], "char", p[2],
+                    "char_n", Integer.parseInt(p[3]), "offset", offset);
+            return obj("status", "pending", "request", openRequest(e, central, "read", offset, view, new LinkedHashMap<>()));
+        }
         if (c.value == null) return obj("status", "unlikely");
         if (offset > c.value.length) return obj("status", "invalid_offset");
         return obj("status", "ok", "hex", hex(java.util.Arrays.copyOfRange(c.value, offset, c.value.length)));
@@ -2093,12 +2139,16 @@ public final class BleCore {
     /**
      * Write requests of one central, applied all or none (iOS delivers a batch and answers it once;
      * Android passes one). Each is {key, offset, hex}. {@code prepare}: an Android prepared write,
-     * buffered until executeWrite. Returns ok, not_found, not_permitted, invalid_offset,
-     * invalid_length or stale.
+     * buffered until executeWrite. A request may carry {@code response: false} (Android
+     * responseNeeded false). Returns ok, not_found, not_permitted, invalid_offset, invalid_length or
+     * stale; when the batch writes a characteristic with flag a and wants a response, "pending N":
+     * the page answers request N with respond, for the whole batch.
      */
     public String writeRequests(int e, String central, int mtu, List<Map<String, Object>> reqs, boolean prepare) {
         if (!serverCurrent(e, "write_request")) return "stale";
         Map<String, byte[]> next = new LinkedHashMap<>();
+        List<Object> asked = new ArrayList<>();
+        boolean response = true;
         for (Map<String, Object> r : reqs) {
             String key = (String) r.get("key");
             Chr c = chrOf(key);
@@ -2106,6 +2156,13 @@ public final class BleCore {
             if (!c.has('w') && !c.has('c')) return "not_permitted";
             byte[] data = fromHex((String) r.get("hex"));
             if (data == null) return "invalid_length";
+            if (Boolean.FALSE.equals(r.get("response"))) response = false;
+            if (c.has('a') && !prepare) {
+                int offset = (Integer) r.get("offset");
+                if (offset + data.length > WRITE_MAX) return "invalid_length";
+                asked.add(writeView(key, offset, data));
+                continue;
+            }
             String slot = prepare ? central + "|" + key : key;
             byte[] base = next.containsKey(slot) ? next.get(slot)
                     : prepare ? prepared.getOrDefault(slot, new byte[0]) : c.value == null ? new byte[0] : c.value;
@@ -2117,6 +2174,15 @@ public final class BleCore {
             next.put(slot, v);
         }
         seen(central, mtu);
+        if (!asked.isEmpty()) {
+            Map<String, Object> view = obj("kind", "write", "central", central, "writes", asked);
+            if (response) return "pending " + openRequest(e, central, "write", 0, view, next);
+            // No answer travels back to the central: the page gets the write, and nothing waits.
+            Map<String, Object> rec = obj("request", null, "state", "unanswered");
+            rec.putAll(view);
+            rec.put("mtu", centrals.get(central));
+            record("att_request", rec);
+        }
         for (Map.Entry<String, byte[]> x : next.entrySet()) {
             if (prepare) prepared.put(x.getKey(), x.getValue());
             else commit(central, x.getKey(), x.getValue());
@@ -2124,15 +2190,128 @@ public final class BleCore {
         return "ok";
     }
 
-    /** Android onExecuteWrite: commit (true) or drop this central's prepared writes. */
+    /**
+     * Android onExecuteWrite: commit (true) or drop this central's prepared writes. When a prepared
+     * characteristic has flag a, "pending N": the page answers the assembled values with respond.
+     */
     public String executeWrite(int e, String central, boolean execute) {
         if (!serverCurrent(e, "execute_write")) return "stale";
+        List<Object> asked = new ArrayList<>();
+        Map<String, byte[]> commits = new LinkedHashMap<>();
         for (String slot : new ArrayList<>(prepared.keySet())) {
             if (!slot.startsWith(central + "|")) continue;
             byte[] v = prepared.remove(slot);
-            if (execute) commit(central, slot.substring(central.length() + 1), v);
+            if (!execute) continue;
+            String key = slot.substring(central.length() + 1);
+            Chr c = chrOf(key);
+            if (c != null && c.has('a')) asked.add(writeView(key, 0, v));
+            else commits.put(key, v);
         }
+        if (!asked.isEmpty()) {
+            return "pending " + openRequest(e, central, "write", 0, obj("kind", "write", "central", central, "writes", asked),
+                    commits);
+        }
+        for (Map.Entry<String, byte[]> x : commits.entrySet()) commit(central, x.getKey(), x.getValue());
         return "ok";
+    }
+
+    // ---- page-answered requests (characteristics with flag a) ------------------------------------
+
+    /**
+     * How long a request waits for the page: under ATT's 30 s transaction timeout (Bluetooth Core
+     * 5.4, Vol 3, Part F, 3.3.3), after which the central drops the link; the core answers unlikely first.
+     */
+    public static final long ATT_ANSWER_MS = 25_000;
+    /** The ATT outcomes respond takes; each radio maps them to its platform's codes. */
+    public static final List<String> ATT_STATUSES = java.util.Arrays.asList("ok", "not_permitted", "invalid_offset",
+            "invalid_length", "insufficient_authentication", "insufficient_authorization", "insufficient_encryption",
+            "not_supported", "insufficient_resources", "unlikely");
+
+    static final class Req {
+        final int id, epoch, offset;
+        final String central, kind;
+        /** Writes in the same batch to characteristics without flag a: committed when the page answers ok. */
+        final Map<String, byte[]> commits;
+
+        Req(int id, int epoch, String central, String kind, int offset, Map<String, byte[]> commits) {
+            this.id = id;
+            this.epoch = epoch;
+            this.central = central;
+            this.kind = kind;
+            this.offset = offset;
+            this.commits = commits;
+        }
+    }
+
+    final Map<Integer, Req> requests = new LinkedHashMap<>();
+    int nextReq;
+
+    private static Map<String, Object> writeView(String key, int offset, byte[] data) {
+        String[] p = key.split("[#/]");
+        return obj("service", p[0], "char", p[2], "char_n", Integer.parseInt(p[3]), "offset", offset, "hex", hex(data));
+    }
+
+    private int openRequest(int e, String central, String kind, int offset, Map<String, Object> view, Map<String, byte[]> commits) {
+        int id = ++nextReq;
+        requests.put(id, new Req(id, e, central, kind, offset, commits));
+        Map<String, Object> rec = obj("request", id, "state", "open");
+        rec.putAll(view);
+        rec.put("mtu", centrals.get(central));
+        record("att_request", rec);
+        port.timer("att", id, ATT_ANSWER_MS);
+        return id;
+    }
+
+    /**
+     * respond: the page's answer to request {@code request}. {@code status} null means ok; a read
+     * answered ok carries exactly one of hex, b64 and text (the value from the request's offset);
+     * {@code offset} below 0 means the request's own.
+     */
+    public void respond(int call, int request, String status, String hexValue, String b64Value, String text, int offset) {
+        Req q = requests.get(request);
+        if (q == null) {
+            fail(call, "not_found", "no open request " + request + ": it was answered, it expired or its central left");
+            return;
+        }
+        String st = status == null ? "ok" : status;
+        if (!ATT_STATUSES.contains(st)) {
+            fail(call, "bad_value", "status must be one of " + String.join(", ", ATT_STATUSES));
+            return;
+        }
+        byte[] data = null;
+        if ("read".equals(q.kind) && "ok".equals(st)) {
+            data = bytes(hexValue, b64Value, text);
+            if (data == null) {
+                fail(call, "bad_value", "a read answered ok carries exactly one of hex, b64 and text, well formed");
+                return;
+            }
+            if (WRITE_MAX < data.length) {
+                fail(call, "too_long", data.length + " bytes; at most " + WRITE_MAX);
+                return;
+            }
+        } else if (hexValue != null || b64Value != null || text != null) {
+            fail(call, "bad_value", "only a read answered ok carries a value");
+            return;
+        }
+        requests.remove(request);
+        String err = port.attRespond(q.epoch, request, st, offset < 0 ? q.offset : offset, data);
+        if (err != null) {
+            refused(call, err);
+            return;
+        }
+        if ("ok".equals(st)) for (Map.Entry<String, byte[]> x : q.commits.entrySet()) commit(q.central, x.getKey(), x.getValue());
+        record("att_request", obj("request", request, "state", "answered", "status", st));
+        ok(call, obj("request", request, "status", st, "bytes", data == null ? 0 : data.length));
+    }
+
+    /** The open requests of {@code central} end without an answer: the central left (or the adapter went off). */
+    private void dropRequests(String central, String reason) {
+        for (Iterator<Req> it = requests.values().iterator(); it.hasNext(); ) {
+            Req q = it.next();
+            if (!central.equals(q.central)) continue;
+            it.remove();
+            record("att_request", obj("request", q.id, "state", "dropped", "reason", reason));
+        }
     }
 
     private void commit(String central, String key, byte[] v) {
@@ -2304,6 +2483,445 @@ public final class BleCore {
         ok(call, obj("advertising", false));
     }
 
+    // ---- L2CAP connection-oriented channels -------------------------------------------------------
+
+    /** Bytes in one l2cap_send: the bridge carries a string of at most 4096 characters (hex 2048 bytes). */
+    public static final int L2CAP_SEND_MAX = 2048;
+    static final String L2CAP_PSM = "psm must be an LE PSM, 1 to 255 (Bluetooth Core 5.4, Vol 3, Part A, 4.22)";
+
+    static final class Channel {
+        final int n, psm;
+        final String role, peer;
+        String state;
+        int call = -1;
+
+        Channel(int n, String role, String peer, int psm, String state) {
+            this.n = n;
+            this.role = role;
+            this.peer = peer;
+            this.psm = psm;
+            this.state = state;
+        }
+    }
+
+    final Map<Integer, Channel> channels = new LinkedHashMap<>();
+    /** Publishes in flight, by token: {call, encrypted}. */
+    final Map<Integer, Object[]> publishing = new LinkedHashMap<>();
+    /** Published PSMs and whether each needs encryption. */
+    final Map<Integer, Boolean> published = new LinkedHashMap<>();
+    final List<Map<String, Object>> pendingL2cap = new ArrayList<>();
+    int nextChannel, nextPublish;
+
+    private Map<String, Object> channelView(Channel ch) {
+        return obj("channel", ch.n, "state", ch.state, "role", ch.role, "peer", ch.peer, "psm", ch.psm);
+    }
+
+    /** l2cap_publish: the peripheral role's listening channel; the platform picks the PSM. */
+    public void l2capPublish(int call, boolean encrypted) {
+        if (!on()) {
+            fail(call, "unavailable", "Bluetooth is " + adapter);
+            return;
+        }
+        int t = ++nextPublish;
+        String err = port.l2capPublish(epoch, t, encrypted);
+        if (err != null) {
+            refused(call, err);
+            return;
+        }
+        publishing.put(t, new Object[]{call, encrypted});
+        port.timer("l2cap_publish", t, OP_MS);
+    }
+
+    public void l2capPublished(int e, int t, int psm, String code) {
+        if (!serverCurrent(e, "l2cap_published")) return;
+        Object[] p = publishing.remove(t);
+        if (p == null) {
+            stale("l2cap_published " + t);
+            return;
+        }
+        int call = (Integer) p[0];
+        boolean encrypted = (Boolean) p[1];
+        if (code != null) {
+            fail(call, "l2cap_failed", "the platform did not publish the channel: " + code);
+            return;
+        }
+        if (call >= 0 && !port.isActive(call)) {
+            port.l2capUnpublish(psm);
+            fail(call, "timeout", "the channel was published after the route timed out");
+            return;
+        }
+        published.put(psm, encrypted);
+        ok(call, obj("psm", psm, "encrypted", encrypted));
+    }
+
+    public void l2capUnpublish(int call, int psm) {
+        if (!published.containsKey(psm)) {
+            fail(call, "not_found", "no published channel on psm " + psm);
+            return;
+        }
+        published.remove(psm);
+        port.l2capUnpublish(psm);
+        ok(call, obj("psm", psm, "published", false));
+    }
+
+    /** A central opened a channel to a published PSM. Returns the channel number, or -1 (the radio closes it). */
+    public int l2capIncoming(int e, int psm, String peer) {
+        if (!serverCurrent(e, "l2cap_incoming")) return -1;
+        if (!published.containsKey(psm)) {
+            stale("l2cap_incoming psm " + psm);
+            return -1;
+        }
+        Channel ch = new Channel(++nextChannel, "peripheral", peer, psm, "open");
+        channels.put(ch.n, ch);
+        record("l2cap", channelView(ch));
+        updateHold();
+        return ch.n;
+    }
+
+    /** l2cap_open: the central role's channel to {@code id} on {@code psm}, within {@code seconds}. */
+    public void l2capOpen(int call, String id, int psm, boolean encrypted, int seconds) {
+        if (!isId(id, android ? "android" : "ios")) {
+            fail(call, "bad_value", "id must be a device id from a scan or a link");
+            return;
+        }
+        if (psm < 1 || psm > 255) {
+            fail(call, "bad_value", L2CAP_PSM);
+            return;
+        }
+        if (!on()) {
+            fail(call, "unavailable", "Bluetooth is " + adapter);
+            return;
+        }
+        Channel ch = new Channel(++nextChannel, "central", id, psm, "opening");
+        String err = port.l2capOpen(epoch, ch.n, id, psm, encrypted);
+        if (err != null) {
+            refused(call, err);
+            return;
+        }
+        ch.call = call;
+        channels.put(ch.n, ch);
+        port.timer("l2cap_open", ch.n, (seconds > 0 ? seconds : 10) * 1000L);
+    }
+
+    public void l2capOpened(int e, int n, String code) {
+        if (!serverCurrent(e, "l2cap_opened")) return;
+        Channel ch = channels.get(n);
+        if (ch == null || !"opening".equals(ch.state)) {
+            stale("l2cap_opened " + n);
+            return;
+        }
+        int call = ch.call;
+        ch.call = -1;
+        if (code != null) {
+            channels.remove(n);
+            fail(call, "l2cap_failed", "the channel did not open: " + code);
+            return;
+        }
+        if (call >= 0 && !port.isActive(call)) {
+            channels.remove(n);
+            port.l2capClose(n);
+            fail(call, "timeout", "the channel opened after the route timed out");
+            return;
+        }
+        ch.state = "open";
+        record("l2cap", channelView(ch));
+        updateHold();
+        ok(call, obj("channel", n, "psm", ch.psm, "id", ch.peer));
+    }
+
+    public void l2capSend(int call, int n, String hexValue, String b64Value, String text) {
+        Channel ch = channels.get(n);
+        if (ch == null) {
+            fail(call, "not_found", "no channel " + n);
+            return;
+        }
+        if (!"open".equals(ch.state)) {
+            fail(call, "not_connected", "channel " + n + " is not open yet");
+            return;
+        }
+        byte[] data = bytes(hexValue, b64Value, text);
+        if (data == null || data.length == 0) {
+            fail(call, "bad_value", "give exactly one of hex, b64 and text, well formed and not empty");
+            return;
+        }
+        if (data.length > L2CAP_SEND_MAX) {
+            fail(call, "too_long", data.length + " bytes; at most " + L2CAP_SEND_MAX + " per call");
+            return;
+        }
+        String err = port.l2capSend(n, data);
+        if (err != null) {
+            refused(call, err);
+            return;
+        }
+        ok(call, obj("channel", n, "bytes", data.length));
+    }
+
+    /** Bytes arrived on channel {@code n}: one l2cap_data record, batched like values. */
+    public void l2capData(int n, String hexValue) {
+        Channel ch = channels.get(n);
+        if (ch == null || !"open".equals(ch.state)) {
+            stale("l2cap_data " + n);
+            return;
+        }
+        Map<String, Object> rec = obj("channel", n, "hex", hexValue);
+        append("l2cap_data", rec);
+        Map<String, Object> view = obj("seq", nextSeq, "t", journal.peekLast().get("t"));
+        view.putAll(rec);
+        pendingL2cap.add(view);
+        scheduleFlush();
+    }
+
+    /** The platform closed channel {@code n} (the peer, or an error {@code code}). */
+    public void l2capClosed(int n, String code) {
+        Channel ch = channels.remove(n);
+        if (ch == null) {
+            stale("l2cap_closed " + n);
+            return;
+        }
+        if ("opening".equals(ch.state)) {
+            fail(ch.call, "l2cap_failed", "the channel closed before it opened" + (code == null ? "" : ": " + code));
+            return;
+        }
+        ch.state = "closed";
+        Map<String, Object> rec = channelView(ch);
+        rec.put("reason", code == null ? "remote" : "error");
+        if (code != null) rec.put("error", code);
+        record("l2cap", rec);
+        updateHold();
+    }
+
+    public void l2capClose(int call, int n) {
+        Channel ch = channels.remove(n);
+        if (ch == null) {
+            fail(call, "not_found", "no channel " + n);
+            return;
+        }
+        port.l2capClose(n);
+        if ("opening".equals(ch.state)) {
+            fail(ch.call, "l2cap_failed", "l2cap_close came before the channel opened");
+        } else {
+            ch.state = "closed";
+            Map<String, Object> rec = channelView(ch);
+            rec.put("reason", "requested");
+            record("l2cap", rec);
+        }
+        updateHold();
+        ok(call, obj("channel", n, "state", "closed"));
+    }
+
+    public void l2capChannels(int call) {
+        List<Object> list = new ArrayList<>();
+        for (Channel ch : channels.values()) list.add(channelView(ch));
+        List<Object> psms = new ArrayList<>();
+        for (Map.Entry<Integer, Boolean> x : published.entrySet()) psms.add(obj("psm", x.getKey(), "encrypted", x.getValue()));
+        ok(call, obj("channels", list, "published", psms));
+    }
+
+    private int openChannels() {
+        int k = 0;
+        for (Channel ch : channels.values()) if ("open".equals(ch.state)) k++;
+        return k;
+    }
+
+    // ---- extended advertising sets (Android) ------------------------------------------------------
+
+    static final String ADV_SET_LIMIT = "iOS advertises one legacy advertisement: CBPeripheralManager.startAdvertising "
+            + "takes only a local name and service UUIDs; extended and periodic advertising sets are not in its API";
+
+    static final class AdvSet {
+        final int n;
+        int call;
+        boolean on;
+
+        AdvSet(int n, int call) {
+            this.n = n;
+            this.call = call;
+        }
+    }
+
+    final Map<Integer, AdvSet> sets = new LinkedHashMap<>();
+    int nextSet;
+
+    private static Object given(Map<String, Object> raw, String k, Object dflt) {
+        Object v = raw.get(k);
+        return v == null ? dflt : v;
+    }
+
+    /** The manufacturer and service data pairs of one AdvertiseData under {@code prefix}; a String is the error. */
+    private static Object adData(Map<String, Object> raw, String prefix, boolean withName) {
+        Map<String, Object> d = obj();
+        if (withName) {
+            List<String> uuids = uuidList((String) raw.get(prefix + "services"));
+            if (uuids == null) return prefix + "services must be up to 20 UUIDs";
+            d.put("services", new ArrayList<Object>(uuids));
+            d.put("includeName", given(raw, prefix + "include_name", false));
+        }
+        Object mid = raw.get(prefix + "manufacturer_id");
+        String mhex = (String) raw.get(prefix + "manufacturer_hex");
+        if ((mid == null) != (mhex == null) || (mid != null && ((Integer) mid < 0 || (Integer) mid > 0xFFFF))
+                || (mhex != null && fromHex(mhex) == null)) {
+            return prefix + "manufacturer_id (0 to 65535) and " + prefix + "manufacturer_hex go together, as an id and hex bytes";
+        }
+        d.put("manufacturerId", mid);
+        d.put("manufacturerHex", mhex == null ? null : mhex.toLowerCase(Locale.ROOT));
+        String su = (String) raw.get(prefix + "service_data_uuid"), shex = (String) raw.get(prefix + "service_data_hex");
+        String sdUuid = su == null ? null : uuid(su);
+        if ((su == null) != (shex == null) || (su != null && sdUuid == null) || (shex != null && fromHex(shex) == null)) {
+            return prefix + "service_data_uuid and " + prefix + "service_data_hex go together, as a UUID and hex bytes";
+        }
+        d.put("serviceDataUuid", sdUuid);
+        d.put("serviceDataHex", shex == null ? null : shex.toLowerCase(Locale.ROOT));
+        return d;
+    }
+
+    /**
+     * The advertise_set_start parameters, checked by the rules of Android's AdvertisingSetParameters
+     * and the Core specification; a String is the error, else the parameters for the radio.
+     */
+    @SuppressWarnings("unchecked")
+    static Object advertiseSetParams(Map<String, Object> raw) {
+        boolean legacy = (Boolean) given(raw, "legacy", false);
+        boolean connectable = (Boolean) given(raw, "connectable", false);
+        boolean scannable = (Boolean) given(raw, "scannable", false);
+        boolean anonymous = (Boolean) given(raw, "anonymous", false);
+        boolean includeTxPower = (Boolean) given(raw, "include_tx_power", false);
+        String primary = (String) given(raw, "primary_phy", "1m"), secondary = (String) given(raw, "secondary_phy", "1m");
+        if (legacy) {
+            if (anonymous) return "a legacy advertisement cannot be anonymous";
+            if (connectable && !scannable) return "a legacy advertisement cannot be connectable and not scannable";
+            if (includeTxPower) return "a legacy advertisement cannot carry the TX power in its header";
+            if (!"1m".equals(primary) || !"1m".equals(secondary)) return "a legacy advertisement uses the 1M PHY";
+        } else {
+            if (connectable && scannable) return "an extended advertisement cannot be both connectable and scannable";
+            if (anonymous && connectable) return "an extended advertisement cannot be both connectable and anonymous";
+        }
+        boolean periodic = raw.get("periodic_interval_ms") != null;
+        if (periodic && (legacy || connectable || scannable)) {
+            return "periodic advertising needs an extended set that is neither connectable nor scannable";
+        }
+        if (!periodic && (raw.get("periodic_include_tx_power") != null || raw.get("periodic_manufacturer_id") != null
+                || raw.get("periodic_manufacturer_hex") != null || raw.get("periodic_service_data_uuid") != null
+                || raw.get("periodic_service_data_hex") != null)) {
+            return "periodic data needs periodic_interval_ms";
+        }
+        boolean response = raw.get("response_services") != null || raw.get("response_include_name") != null
+                || raw.get("response_manufacturer_id") != null || raw.get("response_manufacturer_hex") != null;
+        if (response && !scannable) return "a scan response needs a scannable set";
+        Object data = adData(raw, "", true);
+        if (data instanceof String) return data;
+        Map<String, Object> p = obj("legacy", legacy, "connectable", connectable, "scannable", scannable, "anonymous", anonymous,
+                "includeTxPower", includeTxPower, "primaryPhy", primary, "secondaryPhy", secondary);
+        p.put("intervalMs", raw.get("interval_ms"));
+        p.put("txPowerDbm", raw.get("tx_power_dbm"));
+        p.put("data", data);
+        ((Map<String, Object>) data).put("txPowerLevel", given(raw, "tx_power_data", false));
+        if (response) {
+            Object r = adData(raw, "response_", true);
+            if (r instanceof String) return r;
+            p.put("response", r);
+        } else {
+            p.put("response", null);
+        }
+        if (periodic) {
+            Object d = adData(raw, "periodic_", false);
+            if (d instanceof String) return d;
+            p.put("periodic", obj("intervalMs", raw.get("periodic_interval_ms"),
+                    "includeTxPower", given(raw, "periodic_include_tx_power", false), "data", d));
+        } else {
+            p.put("periodic", null);
+        }
+        p.put("seconds", given(raw, "seconds", 0));
+        p.put("maxEvents", given(raw, "max_events", 0));
+        return p;
+    }
+
+    @SuppressWarnings("unchecked")
+    public void advertiseSetStart(int call, Map<String, Object> raw) {
+        if (!android) {
+            fail(call, "platform_limit", ADV_SET_LIMIT);
+            return;
+        }
+        Object p = advertiseSetParams(raw);
+        if (p instanceof String) {
+            fail(call, "bad_value", (String) p);
+            return;
+        }
+        if (!on()) {
+            fail(call, "unavailable", "Bluetooth is " + adapter);
+            return;
+        }
+        AdvSet a = new AdvSet(++nextSet, call);
+        String err = port.advertiseSetStart(epoch, a.n, (Map<String, Object>) p);
+        if (err != null) {
+            refused(call, err);
+            return;
+        }
+        sets.put(a.n, a);
+        port.timer("advertise_set", a.n, OP_MS);
+    }
+
+    /** The platform started set {@code n} (code null, with its TX power in dBm) or refused it. */
+    public void advertiseSetStarted(int e, int n, int txPower, String code) {
+        if (!serverCurrent(e, "advertise_set_started")) return;
+        AdvSet a = sets.get(n);
+        if (a == null || a.on) {
+            stale("advertise_set_started " + n);
+            return;
+        }
+        int call = a.call;
+        a.call = -1;
+        if (code != null) {
+            sets.remove(n);
+            fail(call, "advertise_failed", code);
+            return;
+        }
+        if (call >= 0 && !port.isActive(call)) {
+            sets.remove(n);
+            port.advertiseSetStop(n);
+            fail(call, "timeout", "the set started after the route timed out");
+            return;
+        }
+        a.on = true;
+        record("advertising_set", obj("set", n, "state", "started", "tx_power", txPower));
+        updateHold();
+        ok(call, obj("set", n, "tx_power", txPower));
+    }
+
+    /** The platform ended set {@code n} by itself (its duration or event count ran out). */
+    public void advertiseSetStopped(int e, int n) {
+        if (!serverCurrent(e, "advertise_set_stopped")) return;
+        AdvSet a = sets.get(n);
+        if (a == null || !a.on) {
+            stale("advertise_set_stopped " + n);
+            return;
+        }
+        sets.remove(n);
+        record("advertising_set", obj("set", n, "state", "stopped", "reason", "elapsed"));
+        updateHold();
+    }
+
+    public void advertiseSetStop(int call, int n) {
+        AdvSet a = sets.remove(n);
+        if (a == null) {
+            fail(call, "not_found", "no advertising set " + n);
+            return;
+        }
+        port.advertiseSetStop(n);
+        if (!a.on) {
+            fail(a.call, "advertise_failed", "advertise_set_stop came before the platform started the set");
+        } else {
+            record("advertising_set", obj("set", n, "state", "stopped", "reason", "requested"));
+        }
+        updateHold();
+        ok(call, obj("set", n, "state", "stopped"));
+    }
+
+    private int setsOn() {
+        int k = 0;
+        for (AdvSet a : sets.values()) if (a.on) k++;
+        return k;
+    }
+
     // ---- adapter changes of the server ----------------------------------------------------------
 
     /** Bluetooth left on: the server's platform objects of the old epoch are gone. */
@@ -2320,6 +2938,27 @@ public final class BleCore {
         }
         for (String central : new ArrayList<>(centrals.keySet())) endCentral(central, "adapter");
         prepared.clear();
+        for (Channel ch : new ArrayList<>(channels.values())) {
+            channels.remove(ch.n);
+            port.l2capClose(ch.n);
+            if ("opening".equals(ch.state)) {
+                fail(ch.call, "unavailable", "Bluetooth is " + adapter);
+            } else {
+                ch.state = "closed";
+                Map<String, Object> rec = channelView(ch);
+                rec.put("reason", "adapter");
+                record("l2cap", rec);
+            }
+        }
+        for (Object[] p : publishing.values()) fail((Integer) p[0], "unavailable", "Bluetooth is " + adapter);
+        publishing.clear();
+        for (Integer psm : published.keySet()) port.l2capUnpublish(psm);
+        published.clear();
+        for (AdvSet a : sets.values()) {
+            if (a.on) record("advertising_set", obj("set", a.n, "state", "stopped", "reason", "adapter"));
+            else fail(a.call, "unavailable", "Bluetooth is " + adapter);
+        }
+        sets.clear();
         if (sending != null) failJob(sending.job, "unavailable", "Bluetooth is " + adapter);
         for (Packet p : notifyQueue) failJob(p.job, "unavailable", "Bluetooth is " + adapter);
         sending = null;
@@ -2358,9 +2997,9 @@ public final class BleCore {
 
     // ---- keep-alive (Android foreground service) and the iOS server file ------------------------
 
-    /** Links, remote centrals and advertising: what the Android keep-alive service holds the process for. */
+    /** Links, remote centrals, advertising, started sets and open channels: what the Android keep-alive service holds the process for. */
     public int holdCount() {
-        return links.size() + centrals.size() + (advertising ? 1 : 0);
+        return links.size() + centrals.size() + (advertising ? 1 : 0) + setsOn() + openChannels();
     }
 
     private void updateHold() {
@@ -2534,6 +3173,47 @@ public final class BleCore {
                 persistScheduled = false;
                 port.persist(serverSnapshot());
                 return;
+            case "att": {
+                Req q = requests.remove(token);
+                if (q == null) {
+                    stale("att timer " + token);
+                    return;
+                }
+                port.attRespond(q.epoch, token, "unlikely", q.offset, null);
+                record("att_request", obj("request", token, "state", "expired", "status", "unlikely"));
+                return;
+            }
+            case "l2cap_publish": {
+                Object[] p = publishing.remove(token);
+                if (p == null) {
+                    stale("l2cap_publish timer " + token);
+                    return;
+                }
+                fail((Integer) p[0], "l2cap_failed", "the platform did not answer the publish in " + OP_MS / 1000 + " s");
+                return;
+            }
+            case "l2cap_open": {
+                Channel ch = channels.get(token);
+                if (ch == null || !"opening".equals(ch.state)) {
+                    stale("l2cap_open timer " + token);
+                    return;
+                }
+                channels.remove(token);
+                port.l2capClose(token);
+                fail(ch.call, "timeout", "the channel did not open in time");
+                return;
+            }
+            case "advertise_set": {
+                AdvSet a = sets.get(token);
+                if (a == null || a.on) {
+                    stale("advertise_set timer " + token);
+                    return;
+                }
+                sets.remove(token);
+                port.advertiseSetStop(token);
+                fail(a.call, "advertise_failed", "the platform did not answer the set start");
+                return;
+            }
             default:
                 stale("timer " + kind);
         }

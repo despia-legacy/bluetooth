@@ -49,6 +49,7 @@ final class BleExtension: NSObject, NativeExtension, @MainActor BlePort {
                                     dataDirectory: context.dataDirectory, log: { [weak context] in context?.log($0) })
         // Both managers watch the same radio; whichever settles tells the core (it ignores a repeat).
         server.onState = { [weak self] state in self?.core.adapter(state) }
+        radio.onL2capOpened = { [weak self] n, channel, code in self?.l2capOpened(n, channel, code) }
         server.launch()
     }
 
@@ -137,11 +138,14 @@ final class BleExtension: NSObject, NativeExtension, @MainActor BlePort {
     /// Routes that read the core's own state and never touch the radio.
     private static let local: Set<String> = ["events", "devices", "links", "scan_stop", "disconnect", "services",
                                              "service_remove", "value_set", "advertise_stop", "centrals", "central_drop",
-                                             "keep_alive", "priority", "phy", "bond", "bonds"]
+                                             "keep_alive", "priority", "phy", "bond", "bonds", "respond", "l2cap_unpublish",
+                                             "l2cap_send", "l2cap_close", "l2cap_channels", "advertise_set_start",
+                                             "advertise_set_stop"]
     private static let radioRoutes: Set<String> = ["scan_start", "connect", "discover", "read", "write", "subscribe",
-                                                   "unsubscribe", "rssi", "mtu", "raw", "system_devices", "connection_events"]
+                                                   "unsubscribe", "rssi", "mtu", "raw", "system_devices", "connection_events",
+                                                   "l2cap_open"]
     /// Routes of the GATT server and the advertiser: they need the peripheral manager.
-    private static let serverRoutes: Set<String> = ["service_add", "notify", "advertise_start"]
+    private static let serverRoutes: Set<String> = ["service_add", "notify", "advertise_start", "l2cap_publish"]
 
     func handle(_ call: NativeExtCall) async -> NativeExtResult {
         mirror.pump()
@@ -277,6 +281,19 @@ final class BleExtension: NSObject, NativeExtension, @MainActor BlePort {
         case "centrals": core.centrals(c)
         case "central_drop": core.centralDrop(c, str("central"))
         case "keep_alive": core.keepAlive(c, flag("enabled", false), BleExtension.backgroundModes)
+        case "respond":
+            core.respond(c, int("request", 0), str("status"), str("hex"), str("b64"), str("text"), int("offset", -1))
+        case "l2cap_publish": core.l2capPublish(c, flag("encrypted", true))
+        case "l2cap_unpublish": core.l2capUnpublish(c, int("psm", 0))
+        case "l2cap_open": core.l2capOpen(c, id, int("psm", 0), flag("encrypted", true), int("seconds", 0))
+        case "l2cap_send": core.l2capSend(c, int("channel", 0), str("hex"), str("b64"), str("text"))
+        case "l2cap_close": core.l2capClose(c, int("channel", 0))
+        case "l2cap_channels": core.l2capChannels(c)
+        case "advertise_set_start":
+            let raw = BleObj()
+            for k in p.keys.sorted() { raw[k] = p[k] }
+            core.advertiseSetStart(c, raw)
+        case "advertise_set_stop": core.advertiseSetStop(c, int("set", 0))
         default: reply(c, false, "not_registered", call.route, nil)
         }
     }
@@ -325,6 +342,45 @@ final class BleExtension: NSObject, NativeExtension, @MainActor BlePort {
     func keepAlive(_ start: Bool, _ hold: Int) -> String? { nil }
 
     func persist(_ snapshot: BleObj?) { server.persist(snapshot) }
+
+    func attRespond(_ epoch: Int, _ request: Int, _ status: String, _ offset: Int, _ data: [UInt8]?) -> String? {
+        server.attRespond(epoch, request, status, offset, data)
+    }
+
+    func l2capPublish(_ epoch: Int, _ t: Int, _ encrypted: Bool) -> String? { server.l2capPublish(epoch, t, encrypted) }
+
+    func l2capUnpublish(_ psm: Int) { server.l2capUnpublish(psm) }
+
+    /// The epoch of each central-role channel being opened: didOpen reports it to the core.
+    private var l2capEpochs: [Int: Int] = [:]
+
+    /// iOS takes the channel's security from the peripheral's published channel: openL2CAPChannel has no option.
+    func l2capOpen(_ epoch: Int, _ channel: Int, _ id: String, _ psm: Int, _ encrypted: Bool) -> String? {
+        if let err = radio.l2capOpen(channel, id, psm) { return err }
+        l2capEpochs[channel] = epoch
+        return nil
+    }
+
+    /// A central-role channel opened (or failed); one the core already gave up on is let go.
+    private func l2capOpened(_ n: Int, _ channel: CBL2CAPChannel?, _ code: String?) {
+        guard let e = l2capEpochs.removeValue(forKey: n) else { return }
+        if let ch = channel { server.adopt(n, ch) }
+        core.l2capOpened(e, n, code)
+    }
+
+    func l2capSend(_ channel: Int, _ data: [UInt8]) -> String? { server.l2capSend(channel, data) }
+
+    func l2capClose(_ channel: Int) {
+        l2capEpochs.removeValue(forKey: channel)
+        server.l2capClose(channel)
+    }
+
+    /// Not reached: the core answers platform_limit on iOS (BleCore.advSetLimit) before the port.
+    func advertiseSetStart(_ epoch: Int, _ set: Int, _ params: BleObj) -> String? {
+        "platform_limit " + BleCore.advSetLimit
+    }
+
+    func advertiseSetStop(_ set: Int) {}
 
     /// Whether this build declares both Bluetooth background modes (the manifest's info_plist rows).
     static var backgroundModes: Bool {

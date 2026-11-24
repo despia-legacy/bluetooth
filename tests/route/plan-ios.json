@@ -126,5 +126,41 @@
  {
   "cmd": "extension://ble/keep_alive?enabled=false",
   "var": "bleKeepAlive"
+ },
+ {
+  "cmd": "extension://ble/respond?request=1&status=unlikely",
+  "var": "bleRespond"
+ },
+ {
+  "cmd": "extension://ble/l2cap_publish?encrypted=true",
+  "var": "bleL2CapPublish"
+ },
+ {
+  "cmd": "extension://ble/l2cap_unpublish?psm=200",
+  "var": "bleL2CapUnpublish"
+ },
+ {
+  "cmd": "extension://ble/l2cap_open?id=7D9C1E2A-0000-4000-8000-000000000001&psm=128&seconds=2",
+  "var": "bleL2CapOpen"
+ },
+ {
+  "cmd": "extension://ble/l2cap_send?channel=1&hex=00",
+  "var": "bleL2CapSend"
+ },
+ {
+  "cmd": "extension://ble/l2cap_close?channel=1",
+  "var": "bleL2CapClose"
+ },
+ {
+  "cmd": "extension://ble/l2cap_channels",
+  "var": "bleL2CapChannels"
+ },
+ {
+  "cmd": "extension://ble/advertise_set_start?connectable=true&seconds=1",
+  "var": "bleAdvertiseSetStart"
+ },
+ {
+  "cmd": "extension://ble/advertise_set_stop?set=1",
+  "var": "bleAdvertiseSetStop"
  }
 ]

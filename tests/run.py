@@ -52,13 +52,20 @@ SWIFT_MUTATIONS = [
     ("N1", "        return n.1\n", "        return fallback\n", "restore_pending_connect_joined_resolves_with_the_platform_error"),
 ]
 LIMIT = "iOS has no API to request a connection priority or interval; the system and the peripheral set it"
-NEW_MUTATIONS = {  # rules added in this repo (section "finish"), guarded on both cores
+NEW_MUTATIONS = {  # rules added in this repo (sections "finish" and "answers"), guarded on both cores
     "jvm": [
         ("F1", "if (!SCAN_OPTION_KEYS.contains(k)) {", "if (false) {", "finish_scan_filters_by_name_and_manufacturer_with_android_options"),
         ("F2", "if (!(n instanceof String) || !scanNames.contains(n)) return false;", "", "finish_scan_filters_by_name_and_manufacturer_with_android_options"),
         ("F3", LIMIT + '");\n            return;', LIMIT + '");', "finish_priority_and_phy_ios_are_platform_limits"),
         ("F4", '"reason", l.background && !l.unbounded ? "auto" : "requested"', '"reason", l.background ? "auto" : "requested"', "finish_connect_unbounded_answers_at_once_and_waits"),
         ("F5", "if (!asked.equals(previousRun)) {", "if (true) {", "finish_journal_persists_and_serves_the_previous_run"),
+        ("G1", "if (c.has('a')) {", "if (false) {", "pages_answer_reads_and_writes_android"),
+        ("G2", 'if (response) return "pending "', 'if (false) return "pending "', "pages_answer_reads_and_writes_android"),
+        ("G3", 'if ("ok".equals(st)) for', "if (false) for", "pages_answer_reads_and_writes_android"),
+        ("L1", "if (psm < 1 || psm > 255) {", "if (false) {", "l2cap_publish_open_send_close_android"),
+        ("L2", 'if (!"open".equals(ch.state)) {', "if (false) {", "l2cap_publish_open_send_close_android"),
+        ("X1", "if (connectable && scannable) return", "if (false) return", "advertising_sets_rules_start_stop_and_adapter_android"),
+        ("X2", "if (periodic && (legacy || connectable || scannable)) {", "if (false) {", "advertising_sets_rules_start_stop_and_adapter_android"),
     ],
     "swift": [
         ("F1", "for k in options.keys where !BleCore.scanOptionKeys.contains(k) {", "for k in options.keys where false {", "finish_scan_filters_by_name_and_manufacturer_with_android_options"),
@@ -66,6 +73,15 @@ NEW_MUTATIONS = {  # rules added in this repo (section "finish"), guarded on bot
         ("F3", LIMIT + '")\n            return\n', LIMIT + '")\n', "finish_priority_and_phy_ios_are_platform_limits"),
         ("F4", '("reason", l.background && !l.unbounded ? "auto" : "requested")', '("reason", l.background ? "auto" : "requested")', "finish_connect_unbounded_answers_at_once_and_waits"),
         ("F5", "guard r == previousRun else {", "guard false else {", "finish_journal_persists_and_serves_the_previous_run"),
+        ("G1", 'if c.has("a") {', "if false {", "pages_answer_reads_and_writes_ios"),
+        ("G2", 'if response { return "pending ', 'if false { return "pending ', "pages_answer_reads_and_writes_ios"),
+        ("G3", 'if st == "ok" { for', "if false { for", "pages_answer_reads_and_writes_android"),
+        ("L1", "if psm < 1 || psm > 255 {", "if false {", "l2cap_publish_open_send_close_android"),
+        ("L2", 'if ch.state != "open" {', "if false {", "l2cap_publish_open_send_close_android"),
+        ("L3", 'rec["reason"] = code == nil ? "remote" : "error"', 'rec["reason"] = "remote"', "l2cap_ios_stream_error_and_adapter_off"),
+        ("X1", "if connectable && scannable { return", "if false { return", "advertising_sets_rules_start_stop_and_adapter_android"),
+        ("X2", "if periodic && (legacy || connectable || scannable) {", "if false {", "advertising_sets_rules_start_stop_and_adapter_android"),
+        ("X3", 'fail(call, "platform_limit", BleCore.advSetLimit)\n            return\n', 'fail(call, "platform_limit", BleCore.advSetLimit)\n', "advertising_sets_ios_is_a_platform_limit"),
     ],
 }
 

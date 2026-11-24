@@ -224,6 +224,43 @@ public final class BleCoreTest {
         public void persist(Map<String, Object> snapshot) {
             out.add("persist " + BleCore.json(snapshot));
         }
+
+        public String attRespond(int epoch, int request, String status, int offset, byte[] data) {
+            out.add("att_respond " + epoch + " " + request + " " + status + " " + offset + " " + (data == null ? "-" : BleCore.hex(data)));
+            return take("att_respond");
+        }
+
+        public String l2capPublish(int epoch, int t, boolean encrypted) {
+            out.add("l2cap_publish " + epoch + " " + t + " " + encrypted);
+            return take("l2cap_publish");
+        }
+
+        public void l2capUnpublish(int psm) {
+            out.add("l2cap_unpublish " + psm);
+        }
+
+        public String l2capOpen(int epoch, int channel, String id, int psm, boolean encrypted) {
+            out.add("l2cap_open " + epoch + " " + channel + " " + id + " " + psm + " " + encrypted);
+            return take("l2cap_open");
+        }
+
+        public String l2capSend(int channel, byte[] data) {
+            out.add("l2cap_send " + channel + " " + BleCore.hex(data));
+            return take("l2cap_send");
+        }
+
+        public void l2capClose(int channel) {
+            out.add("l2cap_close " + channel);
+        }
+
+        public String advertiseSetStart(int epoch, int set, Map<String, Object> params) {
+            out.add("advertise_set_start " + epoch + " " + set + " " + BleCore.json(params));
+            return take("advertise_set_start");
+        }
+
+        public void advertiseSetStop(int set) {
+            out.add("advertise_set_stop " + set);
+        }
     }
 
     // ---- step driver ------------------------------------------------------------------------------
@@ -477,6 +514,55 @@ public final class BleCoreTest {
                 return;
             case "hold_count":
                 port.out.add("hold_count " + core.holdCount());
+                return;
+            case "respond":
+                core.respond(call, num(st, "request", 0), str(st, "status"), str(st, "hex"), str(st, "b64"), str(st, "text"),
+                        num(st, "offset", -1));
+                return;
+            case "l2cap_publish":
+                core.l2capPublish(call, flag(st, "encrypted", false));
+                return;
+            case "l2cap_published":
+                core.l2capPublished(num(st, "epoch", 1), num(st, "t", 1), num(st, "psm", 0), str(st, "code"));
+                return;
+            case "l2cap_unpublish":
+                core.l2capUnpublish(call, num(st, "psm", 0));
+                return;
+            case "l2cap_incoming":
+                port.out.add("channel " + core.l2capIncoming(num(st, "epoch", 1), num(st, "psm", 0), str(st, "peer")));
+                return;
+            case "l2cap_open":
+                core.l2capOpen(call, str(st, "id"), num(st, "psm", 0), flag(st, "encrypted", false), num(st, "seconds", 0));
+                return;
+            case "l2cap_opened":
+                core.l2capOpened(num(st, "epoch", 1), num(st, "channel", 0), str(st, "code"));
+                return;
+            case "l2cap_send":
+                core.l2capSend(call, num(st, "channel", 0), str(st, "hex"), str(st, "b64"), str(st, "text"));
+                return;
+            case "l2cap_data":
+                core.l2capData(num(st, "channel", 0), str(st, "hex"));
+                return;
+            case "l2cap_closed":
+                core.l2capClosed(num(st, "channel", 0), str(st, "code"));
+                return;
+            case "l2cap_close":
+                core.l2capClose(call, num(st, "channel", 0));
+                return;
+            case "l2cap_channels":
+                core.l2capChannels(call);
+                return;
+            case "advertise_set_start":
+                core.advertiseSetStart(call, map(st, "params"));
+                return;
+            case "advertise_set_started":
+                core.advertiseSetStarted(num(st, "epoch", 1), num(st, "set", 0), num(st, "tx_power", 0), str(st, "code"));
+                return;
+            case "advertise_set_stopped":
+                core.advertiseSetStopped(num(st, "epoch", 1), num(st, "set", 0));
+                return;
+            case "advertise_set_stop":
+                core.advertiseSetStop(call, num(st, "set", 0));
                 return;
             default:
                 throw new IllegalArgumentException("unknown step " + d);

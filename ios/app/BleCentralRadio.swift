@@ -717,4 +717,32 @@ final class BleCentralRadio: NSObject, @MainActor CBCentralManagerDelegate, @Mai
         guard let s = session(peripheral) else { return }
         core.gattChanged(peripheral.identifier.uuidString, s.gen)
     }
+
+    // MARK: L2CAP (central role)
+
+    /// Channels being opened, by peripheral id, in order: didOpen answers them one by one.
+    private var l2capOpening: [String: [Int]] = [:]
+    /// Where an opened channel (or the error) goes: the extension adopts it and tells the core.
+    var onL2capOpened: ((Int, CBL2CAPChannel?, String?) -> Void)?
+
+    /// openL2CAPChannel on a connected peripheral; iOS opens a channel only on a link this app holds.
+    func l2capOpen(_ n: Int, _ id: String, _ psm: Int) -> String? {
+        guard let m = manager, m.state == .poweredOn else { return "unavailable Bluetooth is \(stateName)" }
+        guard let s = sessions[id], s.connected else {
+            return "not_connected iOS opens an L2CAP channel on a connected peripheral (CBPeripheral.openL2CAPChannel): connect first"
+        }
+        l2capOpening[id, default: []].append(n)
+        s.peripheral.openL2CAPChannel(CBL2CAPPSM(psm))
+        return nil
+    }
+
+    func peripheral(_ peripheral: CBPeripheral, didOpen channel: CBL2CAPChannel?, error: Error?) {
+        dispatchPrecondition(condition: .onQueue(.main))
+        let id = peripheral.identifier.uuidString
+        guard var q = l2capOpening[id], !q.isEmpty else { return }
+        let n = q.removeFirst()
+        l2capOpening[id] = q.isEmpty ? nil : q
+        let code = error.map { "error \(($0 as NSError).domain) \(($0 as NSError).code)" } ?? (channel == nil ? "no channel" : nil)
+        onL2capOpened?(n, code == nil ? channel : nil, code)
+    }
 }

@@ -175,6 +175,37 @@ enum BleCoreTests {
         }
 
         func persist(_ snapshot: BleObj?) { out.append("persist \(BleCore.json(snapshot))") }
+
+        func attRespond(_ epoch: Int, _ request: Int, _ status: String, _ offset: Int, _ data: [UInt8]?) -> String? {
+            out.append("att_respond \(epoch) \(request) \(status) \(offset) \(data.map { BleCore.hex($0) } ?? "-")")
+            return take("att_respond")
+        }
+
+        func l2capPublish(_ epoch: Int, _ t: Int, _ encrypted: Bool) -> String? {
+            out.append("l2cap_publish \(epoch) \(t) \(encrypted)")
+            return take("l2cap_publish")
+        }
+
+        func l2capUnpublish(_ psm: Int) { out.append("l2cap_unpublish \(psm)") }
+
+        func l2capOpen(_ epoch: Int, _ channel: Int, _ id: String, _ psm: Int, _ encrypted: Bool) -> String? {
+            out.append("l2cap_open \(epoch) \(channel) \(id) \(psm) \(encrypted)")
+            return take("l2cap_open")
+        }
+
+        func l2capSend(_ channel: Int, _ data: [UInt8]) -> String? {
+            out.append("l2cap_send \(channel) \(BleCore.hex(data))")
+            return take("l2cap_send")
+        }
+
+        func l2capClose(_ channel: Int) { out.append("l2cap_close \(channel)") }
+
+        func advertiseSetStart(_ epoch: Int, _ set: Int, _ params: BleObj) -> String? {
+            out.append("advertise_set_start \(epoch) \(set) \(BleCore.json(params))")
+            return take("advertise_set_start")
+        }
+
+        func advertiseSetStop(_ set: Int) { out.append("advertise_set_stop \(set)") }
     }
 
     // MARK: step driver
@@ -293,6 +324,27 @@ enum BleCoreTests {
         case "keep_alive": core.keepAlive(call, flag(st, "enabled", true), flag(st, "background_modes", true))
         case "hold_current": port.out.append("hold_current \(core.holdCurrent(num(st, "hold", 0)))")
         case "hold_count": port.out.append("hold_count \(core.holdCount())")
+        case "respond":
+            core.respond(call, num(st, "request", 0), str(st, "status"), str(st, "hex"), str(st, "b64"), str(st, "text"),
+                         num(st, "offset", -1))
+        case "l2cap_publish": core.l2capPublish(call, flag(st, "encrypted", false))
+        case "l2cap_published": core.l2capPublished(num(st, "epoch", 1), num(st, "t", 1), num(st, "psm", 0), str(st, "code"))
+        case "l2cap_unpublish": core.l2capUnpublish(call, num(st, "psm", 0))
+        case "l2cap_incoming":
+            port.out.append("channel \(core.l2capIncoming(num(st, "epoch", 1), num(st, "psm", 0), str(st, "peer")!))")
+        case "l2cap_open":
+            core.l2capOpen(call, str(st, "id"), num(st, "psm", 0), flag(st, "encrypted", false), num(st, "seconds", 0))
+        case "l2cap_opened": core.l2capOpened(num(st, "epoch", 1), num(st, "channel", 0), str(st, "code"))
+        case "l2cap_send": core.l2capSend(call, num(st, "channel", 0), str(st, "hex"), str(st, "b64"), str(st, "text"))
+        case "l2cap_data": core.l2capData(num(st, "channel", 0), str(st, "hex")!)
+        case "l2cap_closed": core.l2capClosed(num(st, "channel", 0), str(st, "code"))
+        case "l2cap_close": core.l2capClose(call, num(st, "channel", 0))
+        case "l2cap_channels": core.l2capChannels(call)
+        case "advertise_set_start": core.advertiseSetStart(call, st["params"] as? BleObj ?? BleObj())
+        case "advertise_set_started":
+            core.advertiseSetStarted(num(st, "epoch", 1), num(st, "set", 0), num(st, "tx_power", 0), str(st, "code"))
+        case "advertise_set_stopped": core.advertiseSetStopped(num(st, "epoch", 1), num(st, "set", 0))
+        case "advertise_set_stop": core.advertiseSetStop(call, num(st, "set", 0))
         default:
             if !extra(core, port, st, d) { preconditionFailure("unknown step \(d)") }
         }

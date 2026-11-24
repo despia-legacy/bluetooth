@@ -50,6 +50,22 @@ protocol BlePort: AnyObject {
     func keepAlive(_ start: Bool, _ hold: Int) -> String?
     /// iOS: write the server snapshot to ble-server.json (nil: delete the file).
     func persist(_ snapshot: BleObj?)
+
+    /// Answer the central's request `request` (a read or write of a characteristic with flag a) with an
+    /// ATT outcome (`attStatuses`), the offset and, for a read, the value. nil when handed over, else "code message".
+    func attRespond(_ epoch: Int, _ request: Int, _ status: String, _ offset: Int, _ data: [UInt8]?) -> String?
+    /// Publish an L2CAP channel as token `t`. nil when accepted (l2capPublished follows).
+    func l2capPublish(_ epoch: Int, _ t: Int, _ encrypted: Bool) -> String?
+    func l2capUnpublish(_ psm: Int)
+    /// Open channel `channel` to `id` on `psm`. nil when accepted (l2capOpened follows).
+    func l2capOpen(_ epoch: Int, _ channel: Int, _ id: String, _ psm: Int, _ encrypted: Bool) -> String?
+    /// Queue bytes on an open channel. nil when accepted, else "code message".
+    func l2capSend(_ channel: Int, _ data: [UInt8]) -> String?
+    /// Close a channel or abandon its opening; no callback follows.
+    func l2capClose(_ channel: Int)
+    /// Android: start advertising set `set` (the iOS core never asks). nil when accepted.
+    func advertiseSetStart(_ epoch: Int, _ set: Int, _ params: BleObj) -> String?
+    func advertiseSetStop(_ set: Int)
 }
 
 /// A JSON object that keeps insertion order (the canonical vector form, shared with the Java twin).
@@ -607,6 +623,13 @@ final class BleCore {
             pendingRequests.removeFirst(n)
             port.emit("request", BleCore.obj(("records", batch), ("dropped", dropped)))
             if !pendingRequests.isEmpty { scheduleFlush() }
+        }
+        if !pendingL2cap.isEmpty {
+            let n = min(BleCore.batchMax, pendingL2cap.count)
+            let batch: [Any] = Array(pendingL2cap[0..<n])
+            pendingL2cap.removeFirst(n)
+            port.emit("l2cap_data", BleCore.obj(("records", batch), ("dropped", dropped)))
+            if !pendingL2cap.isEmpty { scheduleFlush() }
         }
     }
 
@@ -1578,7 +1601,8 @@ final class BleCore {
     }
 
     /// The `chars` grammar of service_add (BleCore.java parseChars): `uuid~flags` or
-    /// `uuid~flags~hex`, comma-separated, at most 16; equal UUIDs are numbered in order. nil when malformed.
+    /// `uuid~flags~hex`, comma-separated, at most 16; equal UUIDs are numbered in order. Flag a: the page
+    /// answers the characteristic's reads and writes (att_request, respond). nil when malformed.
     static func parseChars(_ spec: String?) -> [BleObj]? {
         var out: [BleObj] = []
         guard let spec = spec, !spec.isEmpty else { return out }
@@ -1590,12 +1614,13 @@ final class BleCore {
             guard let u = uuid(f[0].trimmingCharacters(in: .whitespaces)), !flags.isEmpty else { return nil }
             var letters = Set<Character>()
             for c in flags {
-                if !"rwcniRW".contains(c) || letters.contains(c) { return nil }
+                if !"rwcniRWa".contains(c) || letters.contains(c) { return nil }
                 letters.insert(c)
             }
             if !flags.contains(where: { "rwcni".contains($0) }) { return nil }
             if flags.contains("R") && !flags.contains("r") { return nil }
             if flags.contains("W") && !flags.contains("w") && !flags.contains("c") { return nil }
+            if flags.contains("a") && !flags.contains("r") && !flags.contains("w") && !flags.contains("c") { return nil }
             var start: Any = NSNull()
             if f.count == 3 {
                 guard let b = fromHex(f[2]), !f[2].isEmpty, b.count <= writeMax else { return nil }
@@ -1939,6 +1964,7 @@ final class BleCore {
     private func endCentral(_ central: String, _ reason: String) {
         for s in services { for c in s.chars { c.remove(central) } }
         prepared.removeAll { $0.0.hasPrefix(central + "|") }
+        dropRequests(central, reason)
         centralList.removeAll { $0.0 == central }
         record("central", BleCore.obj(("central", central), ("state", "disconnected"), ("reason", reason)))
         updateHold()
@@ -1984,27 +2010,45 @@ final class BleCore {
     }
 
     /// A read request, answered from the value store: {status, hex}. Status ok, not_found,
-    /// not_permitted, invalid_offset, unlikely or stale.
+    /// not_permitted, invalid_offset, unlikely or stale; for a characteristic with flag a, pending and the
+    /// request number: the page answers it with respond (or the core answers unlikely after attAnswerMs).
     func readRequest(_ e: Int, _ central: String, _ mtu: Int, _ key: String, _ offset: Int) -> BleObj {
         if !serverCurrent(e, "read_request") { return BleCore.obj(("status", "stale")) }
         guard let c = chrOf(key) else { return BleCore.obj(("status", lostService(key) ? "unlikely" : "not_found")) }
         seen(central, mtu)
         if !c.has("r") { return BleCore.obj(("status", "not_permitted")) }
+        if c.has("a") {
+            let p = key.split(whereSeparator: { $0 == "#" || $0 == "/" }).map(String.init)
+            let view = BleCore.obj(("kind", "read"), ("central", central), ("service", p[0]), ("char", p[2]),
+                                   ("char_n", Int(p[3])!), ("offset", offset))
+            return BleCore.obj(("status", "pending"), ("request", openRequest(e, central, "read", offset, view, [])))
+        }
         guard let v = c.value else { return BleCore.obj(("status", "unlikely")) }
         if offset > v.count { return BleCore.obj(("status", "invalid_offset")) }
         return BleCore.obj(("status", "ok"), ("hex", BleCore.hex(Array(v[offset...]))))
     }
 
     /// Write requests of one central, applied all or none (iOS delivers a batch and answers it once;
-    /// Android passes one). Each is {key, offset, hex}. `prepare`: an Android prepared write.
+    /// Android passes one). Each is {key, offset, hex}, with `response: false` for Android's responseNeeded
+    /// false. `prepare`: an Android prepared write. When the batch writes a characteristic with flag a and
+    /// wants a response, "pending N": the page answers request N with respond, for the whole batch.
     func writeRequests(_ e: Int, _ central: String, _ mtu: Int, _ reqs: [BleObj], _ prepare: Bool) -> String {
         if !serverCurrent(e, "write_request") { return "stale" }
         var next: [(String, [UInt8])] = []
+        var asked: [Any] = []
+        var response = true
         for r in reqs {
             let key = r["key"] as! String
             guard let c = chrOf(key) else { return "not_found" }
             if !c.has("w") && !c.has("c") { return "not_permitted" }
             guard let data = BleCore.fromHex(r["hex"] as? String) else { return "invalid_length" }
+            if (r["response"] as? Bool) == false { response = false }
+            if c.has("a") && !prepare {
+                let offset = r["offset"] as! Int
+                if offset + data.count > BleCore.writeMax { return "invalid_length" }
+                asked.append(BleCore.writeView(key, offset, data))
+                continue
+            }
             let slot = prepare ? central + "|" + key : key
             let base = next.last { $0.0 == slot }?.1
                 ?? (prepare ? prepared.first { $0.0 == slot }?.1 ?? [] : c.value ?? [])
@@ -2015,6 +2059,15 @@ final class BleCore {
             if let i = next.firstIndex(where: { $0.0 == slot }) { next[i].1 = v } else { next.append((slot, v)) }
         }
         seen(central, mtu)
+        if !asked.isEmpty {
+            let view = BleCore.obj(("kind", "write"), ("central", central), ("writes", asked))
+            if response { return "pending \(openRequest(e, central, "write", 0, view, next))" }
+            // No answer travels back to the central: the page gets the write, and nothing waits.
+            let rec = BleCore.obj(("request", NSNull()), ("state", "unanswered"))
+            rec.putAll(view)
+            rec["mtu"] = centralMtu(of: central).map { $0 as Any } ?? NSNull()
+            record("att_request", rec)
+        }
         for (slot, v) in next {
             if prepare {
                 if let i = prepared.firstIndex(where: { $0.0 == slot }) { prepared[i].1 = v } else { prepared.append((slot, v)) }
@@ -2025,15 +2078,118 @@ final class BleCore {
         return "ok"
     }
 
-    /// Android onExecuteWrite: commit (true) or drop this central's prepared writes.
+    /// Android onExecuteWrite: commit (true) or drop this central's prepared writes. When a prepared
+    /// characteristic has flag a, "pending N": the page answers the assembled values with respond.
     func executeWrite(_ e: Int, _ central: String, _ execute: Bool) -> String {
         if !serverCurrent(e, "execute_write") { return "stale" }
         let mine = prepared.filter { $0.0.hasPrefix(central + "|") }
         prepared.removeAll { $0.0.hasPrefix(central + "|") }
+        var asked: [Any] = []
+        var commits: [(String, [UInt8])] = []
         if execute {
-            for (slot, v) in mine { commit(central, String(slot.dropFirst(central.count + 1)), v) }
+            for (slot, v) in mine {
+                let key = String(slot.dropFirst(central.count + 1))
+                if let c = chrOf(key), c.has("a") { asked.append(BleCore.writeView(key, 0, v)) } else { commits.append((key, v)) }
+            }
         }
+        if !asked.isEmpty {
+            return "pending \(openRequest(e, central, "write", 0, BleCore.obj(("kind", "write"), ("central", central), ("writes", asked)), commits))"
+        }
+        for (key, v) in commits { commit(central, key, v) }
         return "ok"
+    }
+
+    // MARK: page-answered requests (characteristics with flag a)
+
+    /// How long a request waits for the page: under ATT's 30 s transaction timeout (Bluetooth Core 5.4,
+    /// Vol 3, Part F, 3.3.3), after which the central drops the link; the core answers unlikely first.
+    static let attAnswerMs = 25000
+    /// The ATT outcomes respond takes; each radio maps them to its platform's codes.
+    static let attStatuses = ["ok", "not_permitted", "invalid_offset", "invalid_length", "insufficient_authentication",
+                              "insufficient_authorization", "insufficient_encryption", "not_supported",
+                              "insufficient_resources", "unlikely"]
+
+    final class Req {
+        let id: Int, epoch: Int, offset: Int
+        let central: String, kind: String
+        /// Writes in the same batch to characteristics without flag a: committed when the page answers ok.
+        let commits: [(String, [UInt8])]
+
+        init(_ id: Int, _ epoch: Int, _ central: String, _ kind: String, _ offset: Int, _ commits: [(String, [UInt8])]) {
+            self.id = id
+            self.epoch = epoch
+            self.central = central
+            self.kind = kind
+            self.offset = offset
+            self.commits = commits
+        }
+    }
+
+    private var requests: [Req] = []
+    private var nextReq = 0
+
+    static func writeView(_ key: String, _ offset: Int, _ data: [UInt8]) -> BleObj {
+        let p = key.split(whereSeparator: { $0 == "#" || $0 == "/" }).map(String.init)
+        return obj(("service", p[0]), ("char", p[2]), ("char_n", Int(p[3])!), ("offset", offset), ("hex", hex(data)))
+    }
+
+    private func openRequest(_ e: Int, _ central: String, _ kind: String, _ offset: Int, _ view: BleObj,
+                             _ commits: [(String, [UInt8])]) -> Int {
+        nextReq += 1
+        let id = nextReq
+        requests.append(Req(id, e, central, kind, offset, commits))
+        let rec = BleCore.obj(("request", id), ("state", "open"))
+        rec.putAll(view)
+        rec["mtu"] = centralMtu(of: central).map { $0 as Any } ?? NSNull()
+        record("att_request", rec)
+        port.timer("att", id, BleCore.attAnswerMs)
+        return id
+    }
+
+    /// respond: the page's answer to request `request`. `status` nil means ok; a read answered ok carries
+    /// exactly one of hex, b64 and text (the value from the request's offset); `offset` below 0 means the request's own.
+    func respond(_ call: Int, _ request: Int, _ status: String?, _ hexValue: String?, _ b64Value: String?, _ text: String?,
+                 _ offset: Int) {
+        guard let i = requests.firstIndex(where: { $0.id == request }) else {
+            fail(call, "not_found", "no open request \(request): it was answered, it expired or its central left")
+            return
+        }
+        let q = requests[i]
+        let st = status ?? "ok"
+        if !BleCore.attStatuses.contains(st) {
+            fail(call, "bad_value", "status must be one of " + BleCore.attStatuses.joined(separator: ", "))
+            return
+        }
+        var data: [UInt8]?
+        if q.kind == "read" && st == "ok" {
+            guard let d = BleCore.bytes(hexValue, b64Value, text) else {
+                fail(call, "bad_value", "a read answered ok carries exactly one of hex, b64 and text, well formed")
+                return
+            }
+            if d.count > BleCore.writeMax {
+                fail(call, "too_long", "\(d.count) bytes; at most \(BleCore.writeMax)")
+                return
+            }
+            data = d
+        } else if hexValue != nil || b64Value != nil || text != nil {
+            fail(call, "bad_value", "only a read answered ok carries a value")
+            return
+        }
+        requests.remove(at: i)
+        if let err = port.attRespond(q.epoch, request, st, offset < 0 ? q.offset : offset, data) {
+            refused(call, err)
+            return
+        }
+        if st == "ok" { for (key, v) in q.commits { commit(q.central, key, v) } }
+        record("att_request", BleCore.obj(("request", request), ("state", "answered"), ("status", st)))
+        ok(call, BleCore.obj(("request", request), ("status", st), ("bytes", data?.count ?? 0)))
+    }
+
+    /// The open requests of `central` end without an answer: the central left (or the adapter went off).
+    private func dropRequests(_ central: String, _ reason: String) {
+        let gone = requests.filter { $0.central == central }
+        requests.removeAll { $0.central == central }
+        for q in gone { record("att_request", BleCore.obj(("request", q.id), ("state", "dropped"), ("reason", reason))) }
     }
 
     private func commit(_ central: String, _ key: String, _ v: [UInt8]) {
@@ -2194,6 +2350,415 @@ final class BleCore {
         ok(call, BleCore.obj(("advertising", false)))
     }
 
+    // MARK: L2CAP connection-oriented channels
+
+    /// Bytes in one l2cap_send: the bridge carries a string of at most 4096 characters (hex 2048 bytes).
+    static let l2capSendMax = 2048
+    static let l2capPsm = "psm must be an LE PSM, 1 to 255 (Bluetooth Core 5.4, Vol 3, Part A, 4.22)"
+
+    final class Channel {
+        let n: Int, psm: Int
+        let role: String, peer: String
+        var state: String
+        var call = -1
+
+        init(_ n: Int, _ role: String, _ peer: String, _ psm: Int, _ state: String) {
+            self.n = n
+            self.role = role
+            self.peer = peer
+            self.psm = psm
+            self.state = state
+        }
+    }
+
+    private var channels: [Channel] = []
+    /// Publishes in flight, by token.
+    private var publishing: [(t: Int, call: Int, encrypted: Bool)] = []
+    /// Published PSMs and whether each needs encryption.
+    private var published: [(psm: Int, encrypted: Bool)] = []
+    private var pendingL2cap: [BleObj] = []
+    private var nextChannel = 0, nextPublish = 0
+
+    private func channel(_ n: Int) -> Channel? { channels.first { $0.n == n } }
+
+    private func channelView(_ ch: Channel) -> BleObj {
+        BleCore.obj(("channel", ch.n), ("state", ch.state), ("role", ch.role), ("peer", ch.peer), ("psm", ch.psm))
+    }
+
+    /// l2cap_publish: the peripheral role's listening channel; the platform picks the PSM.
+    func l2capPublish(_ call: Int, _ encrypted: Bool) {
+        if !on {
+            fail(call, "unavailable", "Bluetooth is \(adapterState)")
+            return
+        }
+        nextPublish += 1
+        let t = nextPublish
+        if let err = port.l2capPublish(epoch, t, encrypted) {
+            refused(call, err)
+            return
+        }
+        publishing.append((t, call, encrypted))
+        port.timer("l2cap_publish", t, BleCore.opMs)
+    }
+
+    func l2capPublished(_ e: Int, _ t: Int, _ psm: Int, _ code: String?) {
+        if !serverCurrent(e, "l2cap_published") { return }
+        guard let i = publishing.firstIndex(where: { $0.t == t }) else {
+            stale("l2cap_published \(t)")
+            return
+        }
+        let p = publishing.remove(at: i)
+        if let code = code {
+            fail(p.call, "l2cap_failed", "the platform did not publish the channel: \(code)")
+            return
+        }
+        if p.call >= 0 && !port.isActive(p.call) {
+            port.l2capUnpublish(psm)
+            fail(p.call, "timeout", "the channel was published after the route timed out")
+            return
+        }
+        published.append((psm, p.encrypted))
+        ok(p.call, BleCore.obj(("psm", psm), ("encrypted", p.encrypted)))
+    }
+
+    func l2capUnpublish(_ call: Int, _ psm: Int) {
+        guard let i = published.firstIndex(where: { $0.psm == psm }) else {
+            fail(call, "not_found", "no published channel on psm \(psm)")
+            return
+        }
+        published.remove(at: i)
+        port.l2capUnpublish(psm)
+        ok(call, BleCore.obj(("psm", psm), ("published", false)))
+    }
+
+    /// A central opened a channel to a published PSM. Returns the channel number, or -1 (the radio closes it).
+    func l2capIncoming(_ e: Int, _ psm: Int, _ peer: String) -> Int {
+        if !serverCurrent(e, "l2cap_incoming") { return -1 }
+        if !published.contains(where: { $0.psm == psm }) {
+            stale("l2cap_incoming psm \(psm)")
+            return -1
+        }
+        nextChannel += 1
+        let ch = Channel(nextChannel, "peripheral", peer, psm, "open")
+        channels.append(ch)
+        record("l2cap", channelView(ch))
+        updateHold()
+        return ch.n
+    }
+
+    /// l2cap_open: the central role's channel to `id` on `psm`, within `seconds`.
+    func l2capOpen(_ call: Int, _ id: String?, _ psm: Int, _ encrypted: Bool, _ seconds: Int) {
+        guard let id = id, BleCore.isId(id, android ? "android" : "ios") else {
+            fail(call, "bad_value", "id must be a device id from a scan or a link")
+            return
+        }
+        if psm < 1 || psm > 255 {
+            fail(call, "bad_value", BleCore.l2capPsm)
+            return
+        }
+        if !on {
+            fail(call, "unavailable", "Bluetooth is \(adapterState)")
+            return
+        }
+        nextChannel += 1
+        let ch = Channel(nextChannel, "central", id, psm, "opening")
+        if let err = port.l2capOpen(epoch, ch.n, id, psm, encrypted) {
+            refused(call, err)
+            return
+        }
+        ch.call = call
+        channels.append(ch)
+        port.timer("l2cap_open", ch.n, (seconds > 0 ? seconds : 10) * 1000)
+    }
+
+    func l2capOpened(_ e: Int, _ n: Int, _ code: String?) {
+        if !serverCurrent(e, "l2cap_opened") { return }
+        guard let ch = channel(n), ch.state == "opening" else {
+            stale("l2cap_opened \(n)")
+            return
+        }
+        let call = ch.call
+        ch.call = -1
+        if let code = code {
+            channels.removeAll { $0 === ch }
+            fail(call, "l2cap_failed", "the channel did not open: \(code)")
+            return
+        }
+        if call >= 0 && !port.isActive(call) {
+            channels.removeAll { $0 === ch }
+            port.l2capClose(n)
+            fail(call, "timeout", "the channel opened after the route timed out")
+            return
+        }
+        ch.state = "open"
+        record("l2cap", channelView(ch))
+        updateHold()
+        ok(call, BleCore.obj(("channel", n), ("psm", ch.psm), ("id", ch.peer)))
+    }
+
+    func l2capSend(_ call: Int, _ n: Int, _ hexValue: String?, _ b64Value: String?, _ text: String?) {
+        guard let ch = channel(n) else {
+            fail(call, "not_found", "no channel \(n)")
+            return
+        }
+        if ch.state != "open" {
+            fail(call, "not_connected", "channel \(n) is not open yet")
+            return
+        }
+        guard let data = BleCore.bytes(hexValue, b64Value, text), !data.isEmpty else {
+            fail(call, "bad_value", "give exactly one of hex, b64 and text, well formed and not empty")
+            return
+        }
+        if data.count > BleCore.l2capSendMax {
+            fail(call, "too_long", "\(data.count) bytes; at most \(BleCore.l2capSendMax) per call")
+            return
+        }
+        if let err = port.l2capSend(n, data) {
+            refused(call, err)
+            return
+        }
+        ok(call, BleCore.obj(("channel", n), ("bytes", data.count)))
+    }
+
+    /// Bytes arrived on channel `n`: one l2cap_data record, batched like values.
+    func l2capData(_ n: Int, _ hexValue: String) {
+        guard let ch = channel(n), ch.state == "open" else {
+            stale("l2cap_data \(n)")
+            return
+        }
+        let rec = BleCore.obj(("channel", n), ("hex", hexValue))
+        append("l2cap_data", rec)
+        let view = BleCore.obj(("seq", nextSeq), ("t", journal[journal.count - 1].t))
+        view.putAll(rec)
+        pendingL2cap.append(view)
+        scheduleFlush()
+    }
+
+    /// The platform closed channel `n` (the peer, or an error `code`).
+    func l2capClosed(_ n: Int, _ code: String?) {
+        guard let ch = channel(n) else {
+            stale("l2cap_closed \(n)")
+            return
+        }
+        channels.removeAll { $0 === ch }
+        if ch.state == "opening" {
+            fail(ch.call, "l2cap_failed", "the channel closed before it opened" + (code.map { ": " + $0 } ?? ""))
+            return
+        }
+        ch.state = "closed"
+        let rec = channelView(ch)
+        rec["reason"] = code == nil ? "remote" : "error"
+        if let c = code { rec["error"] = c }
+        record("l2cap", rec)
+        updateHold()
+    }
+
+    func l2capClose(_ call: Int, _ n: Int) {
+        guard let ch = channel(n) else {
+            fail(call, "not_found", "no channel \(n)")
+            return
+        }
+        channels.removeAll { $0 === ch }
+        port.l2capClose(n)
+        if ch.state == "opening" {
+            fail(ch.call, "l2cap_failed", "l2cap_close came before the channel opened")
+        } else {
+            ch.state = "closed"
+            let rec = channelView(ch)
+            rec["reason"] = "requested"
+            record("l2cap", rec)
+        }
+        updateHold()
+        ok(call, BleCore.obj(("channel", n), ("state", "closed")))
+    }
+
+    func l2capChannels(_ call: Int) {
+        ok(call, BleCore.obj(("channels", channels.map { channelView($0) } as [Any]),
+                             ("published", published.map { BleCore.obj(("psm", $0.psm), ("encrypted", $0.encrypted)) } as [Any])))
+    }
+
+    private var openChannels: Int { channels.filter { $0.state == "open" }.count }
+
+    // MARK: extended advertising sets (Android)
+
+    static let advSetLimit = "iOS advertises one legacy advertisement: CBPeripheralManager.startAdvertising "
+        + "takes only a local name and service UUIDs; extended and periodic advertising sets are not in its API"
+
+    final class AdvSet {
+        let n: Int
+        var call: Int
+        var on = false
+
+        init(_ n: Int, _ call: Int) {
+            self.n = n
+            self.call = call
+        }
+    }
+
+    private var sets: [AdvSet] = []
+    private var nextSet = 0
+
+    /// The manufacturer and service data pairs of one AdvertiseData under `prefix`; a String is the error.
+    private static func adData(_ raw: BleObj, _ prefix: String, _ withName: Bool) -> Any {
+        let d = BleCore.obj()
+        if withName {
+            guard let uuids = uuidList(raw[prefix + "services"] as? String) else { return prefix + "services must be up to 20 UUIDs" }
+            d["services"] = uuids as [Any]
+            d["includeName"] = raw[prefix + "include_name"] as? Bool ?? false
+        }
+        let mid = raw[prefix + "manufacturer_id"] as? Int, mhex = raw[prefix + "manufacturer_hex"] as? String
+        if (mid == nil) != (mhex == nil) || (mid.map { $0 < 0 || $0 > 0xFFFF } ?? false) || (mhex != nil && fromHex(mhex) == nil) {
+            return prefix + "manufacturer_id (0 to 65535) and " + prefix + "manufacturer_hex go together, as an id and hex bytes"
+        }
+        d["manufacturerId"] = mid.map { $0 as Any } ?? NSNull()
+        d["manufacturerHex"] = mhex.map { $0.lowercased() as Any } ?? NSNull()
+        let su = raw[prefix + "service_data_uuid"] as? String, shex = raw[prefix + "service_data_hex"] as? String
+        let sdUuid = su.flatMap { uuid($0) }
+        if (su == nil) != (shex == nil) || (su != nil && sdUuid == nil) || (shex != nil && fromHex(shex) == nil) {
+            return prefix + "service_data_uuid and " + prefix + "service_data_hex go together, as a UUID and hex bytes"
+        }
+        d["serviceDataUuid"] = sdUuid.map { $0 as Any } ?? NSNull()
+        d["serviceDataHex"] = shex.map { $0.lowercased() as Any } ?? NSNull()
+        return d
+    }
+
+    /// The advertise_set_start parameters, checked by the rules of Android's AdvertisingSetParameters and
+    /// the Core specification; a String is the error, else the parameters for the radio.
+    static func advertiseSetParams(_ raw: BleObj) -> Any {
+        let legacy = raw["legacy"] as? Bool ?? false
+        let connectable = raw["connectable"] as? Bool ?? false
+        let scannable = raw["scannable"] as? Bool ?? false
+        let anonymous = raw["anonymous"] as? Bool ?? false
+        let includeTxPower = raw["include_tx_power"] as? Bool ?? false
+        let primary = raw["primary_phy"] as? String ?? "1m", secondary = raw["secondary_phy"] as? String ?? "1m"
+        if legacy {
+            if anonymous { return "a legacy advertisement cannot be anonymous" }
+            if connectable && !scannable { return "a legacy advertisement cannot be connectable and not scannable" }
+            if includeTxPower { return "a legacy advertisement cannot carry the TX power in its header" }
+            if primary != "1m" || secondary != "1m" { return "a legacy advertisement uses the 1M PHY" }
+        } else {
+            if connectable && scannable { return "an extended advertisement cannot be both connectable and scannable" }
+            if anonymous && connectable { return "an extended advertisement cannot be both connectable and anonymous" }
+        }
+        let periodic = raw["periodic_interval_ms"] != nil
+        if periodic && (legacy || connectable || scannable) {
+            return "periodic advertising needs an extended set that is neither connectable nor scannable"
+        }
+        if !periodic && ["periodic_include_tx_power", "periodic_manufacturer_id", "periodic_manufacturer_hex",
+                         "periodic_service_data_uuid", "periodic_service_data_hex"].contains(where: { raw[$0] != nil }) {
+            return "periodic data needs periodic_interval_ms"
+        }
+        let response = ["response_services", "response_include_name", "response_manufacturer_id",
+                        "response_manufacturer_hex"].contains(where: { raw[$0] != nil })
+        if response && !scannable { return "a scan response needs a scannable set" }
+        let data = adData(raw, "", true)
+        guard let dobj = data as? BleObj else { return data }
+        let p = obj(("legacy", legacy), ("connectable", connectable), ("scannable", scannable), ("anonymous", anonymous),
+                    ("includeTxPower", includeTxPower), ("primaryPhy", primary), ("secondaryPhy", secondary))
+        p["intervalMs"] = raw["interval_ms"] ?? NSNull()
+        p["txPowerDbm"] = raw["tx_power_dbm"] ?? NSNull()
+        p["data"] = dobj
+        dobj["txPowerLevel"] = raw["tx_power_data"] as? Bool ?? false
+        if response {
+            let r = adData(raw, "response_", true)
+            guard r is BleObj else { return r }
+            p["response"] = r
+        } else {
+            p["response"] = NSNull()
+        }
+        if periodic {
+            let d = adData(raw, "periodic_", false)
+            guard d is BleObj else { return d }
+            p["periodic"] = obj(("intervalMs", raw["periodic_interval_ms"]!),
+                                ("includeTxPower", raw["periodic_include_tx_power"] as? Bool ?? false), ("data", d))
+        } else {
+            p["periodic"] = NSNull()
+        }
+        p["seconds"] = raw["seconds"] as? Int ?? 0
+        p["maxEvents"] = raw["max_events"] as? Int ?? 0
+        return p
+    }
+
+    func advertiseSetStart(_ call: Int, _ raw: BleObj) {
+        if !android {
+            fail(call, "platform_limit", BleCore.advSetLimit)
+            return
+        }
+        let r = BleCore.advertiseSetParams(raw)
+        guard let p = r as? BleObj else {
+            fail(call, "bad_value", r as? String ?? "bad parameters")
+            return
+        }
+        if !on {
+            fail(call, "unavailable", "Bluetooth is \(adapterState)")
+            return
+        }
+        nextSet += 1
+        let a = AdvSet(nextSet, call)
+        if let err = port.advertiseSetStart(epoch, a.n, p) {
+            refused(call, err)
+            return
+        }
+        sets.append(a)
+        port.timer("advertise_set", a.n, BleCore.opMs)
+    }
+
+    /// The platform started set `n` (code nil, with its TX power in dBm) or refused it.
+    func advertiseSetStarted(_ e: Int, _ n: Int, _ txPower: Int, _ code: String?) {
+        if !serverCurrent(e, "advertise_set_started") { return }
+        guard let a = sets.first(where: { $0.n == n }), !a.on else {
+            stale("advertise_set_started \(n)")
+            return
+        }
+        let call = a.call
+        a.call = -1
+        if let code = code {
+            sets.removeAll { $0 === a }
+            fail(call, "advertise_failed", code)
+            return
+        }
+        if call >= 0 && !port.isActive(call) {
+            sets.removeAll { $0 === a }
+            port.advertiseSetStop(n)
+            fail(call, "timeout", "the set started after the route timed out")
+            return
+        }
+        a.on = true
+        record("advertising_set", BleCore.obj(("set", n), ("state", "started"), ("tx_power", txPower)))
+        updateHold()
+        ok(call, BleCore.obj(("set", n), ("tx_power", txPower)))
+    }
+
+    /// The platform ended set `n` by itself (its duration or event count ran out).
+    func advertiseSetStopped(_ e: Int, _ n: Int) {
+        if !serverCurrent(e, "advertise_set_stopped") { return }
+        guard let a = sets.first(where: { $0.n == n }), a.on else {
+            stale("advertise_set_stopped \(n)")
+            return
+        }
+        sets.removeAll { $0 === a }
+        record("advertising_set", BleCore.obj(("set", n), ("state", "stopped"), ("reason", "elapsed")))
+        updateHold()
+    }
+
+    func advertiseSetStop(_ call: Int, _ n: Int) {
+        guard let a = sets.first(where: { $0.n == n }) else {
+            fail(call, "not_found", "no advertising set \(n)")
+            return
+        }
+        sets.removeAll { $0 === a }
+        port.advertiseSetStop(n)
+        if !a.on {
+            fail(a.call, "advertise_failed", "advertise_set_stop came before the platform started the set")
+        } else {
+            record("advertising_set", BleCore.obj(("set", n), ("state", "stopped"), ("reason", "requested")))
+        }
+        updateHold()
+        ok(call, BleCore.obj(("set", n), ("state", "stopped")))
+    }
+
+    private var setsOn: Int { sets.filter { $0.on }.count }
+
     // MARK: adapter changes of the server
 
     /// Bluetooth left on: the server's platform objects of the old epoch are gone.
@@ -2210,6 +2775,30 @@ final class BleCore {
         }
         for (central, _) in centralList { endCentral(central, "adapter") }
         prepared = []
+        for ch in channels {
+            port.l2capClose(ch.n)
+            if ch.state == "opening" {
+                fail(ch.call, "unavailable", "Bluetooth is \(adapterState)")
+            } else {
+                ch.state = "closed"
+                let rec = channelView(ch)
+                rec["reason"] = "adapter"
+                record("l2cap", rec)
+            }
+        }
+        channels = []
+        for p in publishing { fail(p.call, "unavailable", "Bluetooth is \(adapterState)") }
+        publishing = []
+        for p in published { port.l2capUnpublish(p.psm) }
+        published = []
+        for a in sets {
+            if a.on {
+                record("advertising_set", BleCore.obj(("set", a.n), ("state", "stopped"), ("reason", "adapter")))
+            } else {
+                fail(a.call, "unavailable", "Bluetooth is \(adapterState)")
+            }
+        }
+        sets = []
         if let p = sending { failJob(p.job, "unavailable", "Bluetooth is \(adapterState)") }
         for p in notifyQueue { failJob(p.job, "unavailable", "Bluetooth is \(adapterState)") }
         sending = nil
@@ -2247,7 +2836,7 @@ final class BleCore {
     // MARK: keep-alive (Android foreground service) and the iOS server file
 
     /// Links, remote centrals and advertising: what the Android keep-alive service holds the process for.
-    func holdCount() -> Int { links.count + centralList.count + (advertising ? 1 : 0) }
+    func holdCount() -> Int { links.count + centralList.count + (advertising ? 1 : 0) + setsOn + openChannels }
 
     private func updateHold() {
         if !android { return }
@@ -2454,6 +3043,37 @@ final class BleCore {
         case "persist":
             persistScheduled = false
             port.persist(serverSnapshot())
+        case "att":
+            guard let i = requests.firstIndex(where: { $0.id == token }) else {
+                stale("att timer \(token)")
+                return
+            }
+            let q = requests.remove(at: i)
+            _ = port.attRespond(q.epoch, token, "unlikely", q.offset, nil)
+            record("att_request", BleCore.obj(("request", token), ("state", "expired"), ("status", "unlikely")))
+        case "l2cap_publish":
+            guard let i = publishing.firstIndex(where: { $0.t == token }) else {
+                stale("l2cap_publish timer \(token)")
+                return
+            }
+            let p = publishing.remove(at: i)
+            fail(p.call, "l2cap_failed", "the platform did not answer the publish in \(BleCore.opMs / 1000) s")
+        case "l2cap_open":
+            guard let ch = channel(token), ch.state == "opening" else {
+                stale("l2cap_open timer \(token)")
+                return
+            }
+            channels.removeAll { $0 === ch }
+            port.l2capClose(token)
+            fail(ch.call, "timeout", "the channel did not open in time")
+        case "advertise_set":
+            guard let a = sets.first(where: { $0.n == token }), !a.on else {
+                stale("advertise_set timer \(token)")
+                return
+            }
+            sets.removeAll { $0 === a }
+            port.advertiseSetStop(token)
+            fail(a.call, "advertise_failed", "the platform did not answer the set start")
 
         default:
             stale("timer \(kind)")
