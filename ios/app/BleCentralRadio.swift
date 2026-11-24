@@ -276,6 +276,7 @@ final class BleCentralRadio: NSObject, @MainActor CBCentralManagerDelegate, @Mai
     }
 
     func centralManager(_ central: CBCentralManager, connectionEventDidOccur event: CBConnectionEvent, for peripheral: CBPeripheral) {
+        dispatchPrecondition(condition: .onQueue(.main))
         known[peripheral.identifier.uuidString] = peripheral
         core.external("connection_event", BleCore.obj(("id", peripheral.identifier.uuidString),
                                                       ("event", event == .peerConnected ? "connected" : "disconnected"),
@@ -283,6 +284,7 @@ final class BleCentralRadio: NSObject, @MainActor CBCentralManagerDelegate, @Mai
     }
 
     func centralManager(_ central: CBCentralManager, didUpdateANCSAuthorizationFor peripheral: CBPeripheral) {
+        dispatchPrecondition(condition: .onQueue(.main))
         core.external("ancs", BleCore.obj(("id", peripheral.identifier.uuidString), ("authorized", peripheral.ancsAuthorized)))
     }
 
