@@ -1,0 +1,130 @@
+[
+ {
+  "cmd": "extension://ble/state",
+  "var": "bleState"
+ },
+ {
+  "cmd": "extension://ble/events?after=0&max=5",
+  "var": "bleEvents"
+ },
+ {
+  "cmd": "extension://ble/scan_start?services=180d&seconds=1&names=HR&callback_type=all",
+  "var": "bleScanStart"
+ },
+ {
+  "cmd": "extension://ble/scan_stop",
+  "var": "bleScanStop"
+ },
+ {
+  "cmd": "extension://ble/devices",
+  "var": "bleDevices"
+ },
+ {
+  "cmd": "extension://ble/connect?id=7D9C1E2A-0000-4000-8000-000000000001&seconds=2",
+  "var": "bleConnect"
+ },
+ {
+  "cmd": "extension://ble/disconnect?id=7D9C1E2A-0000-4000-8000-000000000001",
+  "var": "bleDisconnect"
+ },
+ {
+  "cmd": "extension://ble/links",
+  "var": "bleLinks"
+ },
+ {
+  "cmd": "extension://ble/discover?id=7D9C1E2A-0000-4000-8000-000000000001",
+  "var": "bleDiscover"
+ },
+ {
+  "cmd": "extension://ble/read?id=7D9C1E2A-0000-4000-8000-000000000001&service=180d&char=2a37",
+  "var": "bleRead"
+ },
+ {
+  "cmd": "extension://ble/write?id=7D9C1E2A-0000-4000-8000-000000000001&service=180d&char=2a37&text=hi&response=false",
+  "var": "bleWrite"
+ },
+ {
+  "cmd": "extension://ble/raw?id=7D9C1E2A-0000-4000-8000-000000000001&text=hi",
+  "var": "bleRaw"
+ },
+ {
+  "cmd": "extension://ble/subscribe?id=7D9C1E2A-0000-4000-8000-000000000001&service=180d&char=2a37",
+  "var": "bleSubscribe"
+ },
+ {
+  "cmd": "extension://ble/unsubscribe?id=7D9C1E2A-0000-4000-8000-000000000001&service=180d&char=2a37",
+  "var": "bleUnsubscribe"
+ },
+ {
+  "cmd": "extension://ble/rssi?id=7D9C1E2A-0000-4000-8000-000000000001",
+  "var": "bleRssi"
+ },
+ {
+  "cmd": "extension://ble/mtu?id=7D9C1E2A-0000-4000-8000-000000000001&size=185",
+  "var": "bleMtu"
+ },
+ {
+  "cmd": "extension://ble/priority?id=7D9C1E2A-0000-4000-8000-000000000001&level=high",
+  "var": "blePriority"
+ },
+ {
+  "cmd": "extension://ble/phy?id=7D9C1E2A-0000-4000-8000-000000000001",
+  "var": "blePhy"
+ },
+ {
+  "cmd": "extension://ble/bond?id=7D9C1E2A-0000-4000-8000-000000000001",
+  "var": "bleBond"
+ },
+ {
+  "cmd": "extension://ble/bonds",
+  "var": "bleBonds"
+ },
+ {
+  "cmd": "extension://ble/system_devices?services=180d",
+  "var": "bleSystemDevices"
+ },
+ {
+  "cmd": "extension://ble/connection_events?services=180d",
+  "var": "bleConnectionEvents"
+ },
+ {
+  "cmd": "extension://ble/service_add?uuid=fff0&chars=fff1~rn~00",
+  "var": "bleServiceAdd"
+ },
+ {
+  "cmd": "extension://ble/service_remove?uuid=fff9",
+  "var": "bleServiceRemove"
+ },
+ {
+  "cmd": "extension://ble/services",
+  "var": "bleServices"
+ },
+ {
+  "cmd": "extension://ble/value_set?service=fff0&char=fff1&hex=01",
+  "var": "bleValueSet"
+ },
+ {
+  "cmd": "extension://ble/notify?service=fff0&char=fff1&hex=02",
+  "var": "bleNotify"
+ },
+ {
+  "cmd": "extension://ble/advertise_start?name=T&seconds=1",
+  "var": "bleAdvertiseStart"
+ },
+ {
+  "cmd": "extension://ble/advertise_stop",
+  "var": "bleAdvertiseStop"
+ },
+ {
+  "cmd": "extension://ble/centrals",
+  "var": "bleCentrals"
+ },
+ {
+  "cmd": "extension://ble/central_drop?central=7D9C1E2A-0000-4000-8000-000000000001",
+  "var": "bleCentralDrop"
+ },
+ {
+  "cmd": "extension://ble/keep_alive?enabled=false",
+  "var": "bleKeepAlive"
+ }
+]
