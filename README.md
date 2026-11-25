@@ -101,7 +101,7 @@ Supply `NSBluetoothAlwaysUsageDescription` with text explaining your app's Bluet
 
 - **Bluetooth.** `NSBluetoothAlwaysUsageDescription`, declared under `requires.usage_descriptions`. Supply its purpose text as described above. Call `state` with `prompt=true` to show the system prompt. Without `prompt`, `state` never shows it.
 - **Background modes.** `bluetooth-central` and `bluetooth-peripheral`.
-- **State restoration.** The `bluetooth_restoration` lifecycle hook and the central restore identifier `main`. When iOS relaunches the app for Bluetooth, kept links come back and the `restored` event fires.
+- **State restoration.** The `bluetooth_restoration` lifecycle hook and the central restore identifier `main`. When iOS relaunches the app for Bluetooth, kept links come back and the `restored` event fires. The app is scene-based, where iOS hands back no launch options, so the central is recreated with its identifier at every launch once the app has Bluetooth authorization (never a prompt at launch), as Apple's "Central Manager State Restoration Options" describes.
 
 ### Android
 

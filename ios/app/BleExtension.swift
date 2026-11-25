@@ -8,7 +8,9 @@ import Foundation
 /// port is an isolated conformance (`@MainActor BlePort`), so the core runs on the main actor too.
 ///
 /// The CBCentralManager is created only when a route needs Bluetooth (the permission prompt can
-/// follow) or when iOS relaunched the app to restore it (`restoreBluetoothCentrals`). The
+/// follow) or at launch through `restoreBluetoothCentrals` when the app is already authorized (no
+/// prompt), so iOS can restore it: a scene-based app gets no launchOptions to tell a Bluetooth
+/// relaunch (Apple, "Central Manager State Restoration Options"). The
 /// CBPeripheralManager is created only by a server route, or at launch when `ble-server.json`
 /// exists (iOS restores a peripheral manager only when it is created again during launch). `state`
 /// without `prompt` never creates a manager before the app is authorized, so it never prompts.
@@ -121,9 +123,13 @@ final class BleExtension: NSObject, NativeExtension, @MainActor BlePort {
         writeJournal(text, append: !j.rewrite)
     }
 
+    /// Every launch (the runtime cannot tell a Bluetooth relaunch in a scene-based app): recreate the
+    /// central with its restore identifier when that cannot prompt; willRestoreState then hands back
+    /// what iOS kept, and with nothing kept the manager only reports its state.
     func restoreBluetoothCentrals(_ identifiers: [String]) {
-        guard identifiers.contains(ctx.bluetoothRestoreIdentifier("main")) else { return }
-        radio.makeManager()
+        guard identifiers.contains(ctx.bluetoothRestoreIdentifier("main")),
+              CBManager.authorization == .allowedAlways else { return }
+        _ = radio.makeManager()
     }
 
     func sceneDidChange(_ phase: NativeExtScenePhase) {
