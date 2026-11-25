@@ -26,7 +26,7 @@ Use the Despia SDK with React, Vue, Svelte, Next.js, TanStack or HTML5. Projects
 - A Despia V3 app and a web app that serves static files from its own HTTPS origin.
 - The `despia-native` JavaScript SDK (`npm install despia-native`).
 - A physical device. Bluetooth does not run in the iOS simulator.
-- Android dependencies `androidx.core:core:1.19.1` and `androidx.activity:activity:1.13.0`, declared by the extension module. The native build must resolve and verify the app's dependency graph before compilation.
+- Android dependencies `androidx.core:core:1.18.0` and `androidx.activity:activity:1.13.0`, declared by the extension module. The native build must resolve and verify the app's dependency graph before compilation.
 
 ## Install
 
@@ -109,7 +109,7 @@ Supply `NSBluetoothAlwaysUsageDescription` with text explaining your app's Bluet
 - **Legacy grants.** The module's `AndroidManifest.xml` adds `BLUETOOTH` and `BLUETOOTH_ADMIN` up to API 30.
 - **Keep-alive.** `FOREGROUND_SERVICE` and `FOREGROUND_SERVICE_CONNECTED_DEVICE`, for the `connectedDevice` foreground service that keeps links alive while the app is in the background. It starts only from `keep_alive`, while the app is visible.
 - **Restoration.** The module's `AndroidManifest.xml` adds `REQUEST_OBSERVE_COMPANION_DEVICE_PRESENCE` (a normal permission, granted at install) for `presence_start`, the optional feature `android.software.companion_device_setup` (the app still installs on a device without it, where the companion routes answer `unavailable`), the receiver that takes the wake scan's results (not exported), and the companion device service the system binds for presence (protected by `BIND_COMPANION_DEVICE_SERVICE`). `wake_start` and `wake_stop` ask for the scan permissions above; the companion routes need no runtime permission.
-- **Libraries.** `androidx.core:core:1.19.1` and `androidx.activity:activity:1.13.0`.
+- **Libraries.** `androidx.core:core:1.18.0` and `androidx.activity:activity:1.13.0`. core 1.19.1, the newest stable (23 September 2026, read on the AndroidX release page 2026-11-26), cannot be used yet: its AAR metadata requires compileSdk 37 and Android Gradle plugin 9.1.0, and the base app builds with compileSdk 36 and plugin 8.9.1 (a real release build with 1.19.1 failed `checkAarMetadata`, 2026-11-26).
 
 ---
 
