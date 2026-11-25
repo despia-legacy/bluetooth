@@ -345,7 +345,7 @@ public final class BleCoreTest {
                 return;
             case "disconnected":
                 core.disconnected(str(st, "id"), num(st, "gen", 0), st.containsKey("reason") ? str(st, "reason") : "remote",
-                        errorArg(st.get("error")));
+                        errorArg(st.get("error")), flag(st, "reconnecting", false));
                 return;
             case "message":
                 port.out.add("message " + call + " " + port.messages.getOrDefault(call, "-"));

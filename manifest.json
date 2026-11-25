@@ -829,8 +829,8 @@
           }
         },
         "output": {
-          "variable": "bleL2CapPublish",
-          "callback": "onBleL2CapPublish"
+          "variable": "bleL2capPublish",
+          "callback": "onBleL2capPublish"
         }
       },
       {
@@ -844,8 +844,8 @@
           }
         },
         "output": {
-          "variable": "bleL2CapUnpublish",
-          "callback": "onBleL2CapUnpublish"
+          "variable": "bleL2capUnpublish",
+          "callback": "onBleL2capUnpublish"
         }
       },
       {
@@ -873,8 +873,8 @@
         },
         "timeout_ms": 25000,
         "output": {
-          "variable": "bleL2CapOpen",
-          "callback": "onBleL2CapOpen"
+          "variable": "bleL2capOpen",
+          "callback": "onBleL2capOpen"
         }
       },
       {
@@ -899,8 +899,8 @@
           }
         },
         "output": {
-          "variable": "bleL2CapSend",
-          "callback": "onBleL2CapSend"
+          "variable": "bleL2capSend",
+          "callback": "onBleL2capSend"
         }
       },
       {
@@ -913,16 +913,16 @@
           }
         },
         "output": {
-          "variable": "bleL2CapClose",
-          "callback": "onBleL2CapClose"
+          "variable": "bleL2capClose",
+          "callback": "onBleL2capClose"
         }
       },
       {
         "name": "l2cap_channels",
         "params": {},
         "output": {
-          "variable": "bleL2CapChannels",
-          "callback": "onBleL2CapChannels"
+          "variable": "bleL2capChannels",
+          "callback": "onBleL2capChannels"
         }
       },
       {
@@ -966,7 +966,7 @@
           "tx_power_dbm": {
             "type": "int",
             "min": -127,
-            "max": 1
+            "max": 20
           },
           "services": {
             "type": "string",

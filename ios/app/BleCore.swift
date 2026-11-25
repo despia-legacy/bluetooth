@@ -175,6 +175,9 @@ final class BleCore {
         /// A page `connect` with `seconds` 0: the attempt waits for the device without a time limit
         /// (the route answered at once with `connecting`).
         var unbounded = false
+        /// The system reconnects this link itself (iOS 17 CBConnectPeripheralOptionEnableAutoReconnect):
+        /// the attempt started when the platform reported the drop with `reconnecting`.
+        var system = false
         /// The token of the timer bounding an attempt no fresh connect started (restored or adopted).
         var pendingTimer = 0
         var closed = false
@@ -947,12 +950,13 @@ final class BleCore {
     private var lastRefusal = ("connect_failed", "")
 
     private func startLink(_ id: String, auto: Bool, call: Int, seconds: Int, background: Bool, wanted: [String],
-                           unbounded: Bool = false) {
+                           unbounded: Bool = false, system: Bool = false) {
         nextGen += 1
         let l = Link(id, nextGen)
         l.auto = auto
         l.background = background
         l.unbounded = unbounded
+        l.system = system
         l.connectCall = call
         for k in wanted { l.addWanted(k) }
         putLink(l)
@@ -971,7 +975,7 @@ final class BleCore {
         if unbounded {
             record("link", BleCore.obj(("id", id), ("link", l.gen), ("state", "connecting"), ("reason", "requested")))
         } else if background {
-            record("link", BleCore.obj(("id", id), ("link", l.gen), ("state", "reconnecting"), ("reason", "auto")))
+            record("link", BleCore.obj(("id", id), ("link", l.gen), ("state", "reconnecting"), ("reason", system ? "system" : "auto")))
         }
         updateHold()
     }
@@ -1041,11 +1045,14 @@ final class BleCore {
 
     /// The platform reported that attempt `gen` disconnected or failed to connect.
     /// `error`: the platform's own error, when it gave one ({domain, code, message}); it reaches the
-    /// failed connect call's message and the `link` record unchanged.
-    func disconnected(_ id: String, _ gen: Int, _ reason: String, error: BleObj? = nil) {
+    /// failed connect call's message and the `link` record unchanged. `reconnecting`: the platform
+    /// is reconnecting the device itself (iOS 17 `isReconnecting`); the link closes as any drop does
+    /// and a new attempt waits for that reconnect, as an `auto` link's would, without making the
+    /// link `auto`.
+    func disconnected(_ id: String, _ gen: Int, _ reason: String, error: BleObj? = nil, reconnecting: Bool = false) {
         let l = links[id]
         if current(l, gen) {
-            _ = closeLink(l!, BleCore.errorReason(error, reason), down: true, error: error)
+            _ = closeLink(l!, BleCore.errorReason(error, reason), down: true, error: error, systemReconnect: reconnecting)
             return
         }
         if let c = closing[id], c.gen == gen {
@@ -1074,7 +1081,7 @@ final class BleCore {
     /// The one cleanup owner (rule 4). Runs to the end, idempotent. `down`: the platform already
     /// reported the link down, so nothing is asked of it. Returns whether the close is confirmed now.
     @discardableResult
-    func closeLink(_ l: Link, _ reason: String, down: Bool, error: BleObj? = nil) -> Bool {
+    func closeLink(_ l: Link, _ reason: String, down: Bool, error: BleObj? = nil, systemReconnect: Bool = false) -> Bool {
         if l.closed { return true }
         l.closed = true
         var ops: [Op] = []
@@ -1106,12 +1113,13 @@ final class BleCore {
         let rec = BleCore.obj(("id", l.id), ("link", l.gen), ("state", "disconnected"), ("reason", reason))
         if let e = error { rec["error"] = e }
         record("link", rec)
-        if l.auto && reason != "requested" && on {
+        if (l.auto || systemReconnect) && reason != "requested" && on {
             if let c = closing[l.id] {
                 c.reconnect = true
                 c.wanted = l.wanted
             } else {
-                startLink(l.id, auto: true, call: -1, seconds: 0, background: true, wanted: l.wanted)
+                startLink(l.id, auto: l.auto, call: -1, seconds: 0, background: true, wanted: l.wanted,
+                          system: systemReconnect && !l.auto)
             }
         }
         updateHold()
@@ -1376,7 +1384,7 @@ final class BleCore {
 
     private func ready(_ l: Link) {
         record("link", BleCore.obj(("id", l.id), ("link", l.gen), ("state", "connected"),
-                                   ("reason", l.background && !l.unbounded ? "auto" : "requested"),
+                                   ("reason", l.system ? "system" : l.background && !l.unbounded ? "auto" : "requested"),
                                    ("resubscribed", l.resubscribed), ("failed", l.failed)))
         if l.connectCall >= 0 {
             ok(l.connectCall, BleCore.obj(("id", l.id), ("link", l.gen), ("state", "connected"), ("mtu", l.mtu)))

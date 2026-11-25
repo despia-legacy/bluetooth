@@ -243,7 +243,7 @@ enum BleCoreTests {
                                                error: (st["error"] as? BleObj).map {
                                                    // The radio's form: the core's platformError, so the name table is exercised.
                                                    BleCore.platformError($0["domain"] as! String, $0["code"] as! Int, $0["message"] as! String)
-                                               })
+                                               }, reconnecting: flag(st, "reconnecting", false))
         case "message": port.out.append("message \(call) \(port.messages[call] ?? "-")")
         case "disconnect": core.disconnect(call, str(st, "id"))
         case "links": core.links(call)

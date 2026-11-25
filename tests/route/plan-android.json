@@ -133,30 +133,30 @@
  },
  {
   "cmd": "extension://ble/l2cap_publish?encrypted=true",
-  "var": "bleL2CapPublish"
+  "var": "bleL2capPublish"
  },
  {
   "cmd": "extension://ble/l2cap_unpublish?psm=200",
-  "var": "bleL2CapUnpublish"
+  "var": "bleL2capUnpublish"
  },
  {
   "cmd": "extension://ble/l2cap_open?id=AA%3ABB%3ACC%3ADD%3AEE%3A01&psm=128&seconds=2",
-  "var": "bleL2CapOpen"
+  "var": "bleL2capOpen"
  },
  {
   "cmd": "extension://ble/l2cap_send?channel=1&hex=00",
-  "var": "bleL2CapSend"
+  "var": "bleL2capSend"
  },
  {
   "cmd": "extension://ble/l2cap_close?channel=1",
-  "var": "bleL2CapClose"
+  "var": "bleL2capClose"
  },
  {
   "cmd": "extension://ble/l2cap_channels",
-  "var": "bleL2CapChannels"
+  "var": "bleL2capChannels"
  },
  {
-  "cmd": "extension://ble/advertise_set_start?connectable=true&seconds=1",
+  "cmd": "extension://ble/advertise_set_start?connectable=true&tx_power_dbm=20&seconds=1",
   "var": "bleAdvertiseSetStart"
  },
  {

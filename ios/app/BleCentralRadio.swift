@@ -602,9 +602,34 @@ final class BleCentralRadio: NSObject, @MainActor CBCentralManagerDelegate, @Mai
 
     func centralManager(_ central: CBCentralManager, didDisconnectPeripheral peripheral: CBPeripheral, error: Error?) {
         dispatchPrecondition(condition: .onQueue(.main))
+        // Where the system also calls the form with `isReconnecting` (below), that call decides: this
+        // one runs a turn later and finds the drop handled (the session gone or replaced). Where only
+        // this form is called, it reports the drop as before.
+        let id = peripheral.identifier.uuidString
         guard let s = session(peripheral) else { return }
-        sessions[peripheral.identifier.uuidString] = nil
-        core.disconnected(peripheral.identifier.uuidString, s.gen, "remote", error: BleCentralRadio.platformError(error))
+        DispatchQueue.main.async { [weak self] in
+            guard let self = self, self.sessions[id] === s else { return }
+            self.dropped(peripheral, reconnecting: false, error: error)
+        }
+    }
+
+    /// Apple: with CBConnectPeripheralOptionEnableAutoReconnect (iOS 17) "The system uses
+    /// centralManager(_:didDisconnectPeripheral:timestamp:isReconnecting:error:) to notify the
+    /// caller about the disconnection", then connects the peripheral itself and calls didConnect.
+    func centralManager(_ central: CBCentralManager, didDisconnectPeripheral peripheral: CBPeripheral,
+                        timestamp: CFAbsoluteTime, isReconnecting: Bool, error: Error?) {
+        dispatchPrecondition(condition: .onQueue(.main))
+        dropped(peripheral, reconnecting: isReconnecting, error: error)
+    }
+
+    /// The link to `peripheral` dropped. `reconnecting`: the system reconnects it; the core opens a
+    /// new attempt (`link` `reconnecting`, reason `system`) whose session the system's didConnect
+    /// completes, so the page sees `connected` again and its subscriptions are restored.
+    private func dropped(_ peripheral: CBPeripheral, reconnecting: Bool, error: Error?) {
+        guard let s = session(peripheral) else { return }
+        let id = peripheral.identifier.uuidString
+        sessions[id] = nil
+        core.disconnected(id, s.gen, "remote", error: BleCentralRadio.platformError(error), reconnecting: reconnecting)
     }
 
     /// CoreBluetooth's error as the page sees it: its domain, code and description, never dropped.

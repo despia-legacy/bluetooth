@@ -183,6 +183,9 @@ public final class BleCore {
          * limit (the route answered at once with {@code connecting}).
          */
         boolean unbounded;
+        /** The system reconnects this link itself (the platform reported the drop with
+         *  {@code reconnecting}). */
+        boolean system;
         /** The token of the timer bounding an attempt no fresh connect started (restored or adopted). */
         int pendingTimer;
         boolean closed;
@@ -977,10 +980,16 @@ public final class BleCore {
 
     private void startLink(String id, boolean auto, int call, int seconds, boolean background, Set<String> wanted,
                            boolean unbounded) {
+        startLink(id, auto, call, seconds, background, wanted, unbounded, false);
+    }
+
+    private void startLink(String id, boolean auto, int call, int seconds, boolean background, Set<String> wanted,
+                           boolean unbounded, boolean system) {
         Link l = new Link(id, ++nextGen);
         l.auto = auto;
         l.background = background;
         l.unbounded = unbounded;
+        l.system = system;
         l.connectCall = call;
         l.wanted.addAll(wanted);
         links.put(id, l);
@@ -997,7 +1006,7 @@ public final class BleCore {
         if (unbounded) {
             record("link", obj("id", id, "link", l.gen, "state", "connecting", "reason", "requested"));
         } else if (background) {
-            record("link", obj("id", id, "link", l.gen, "state", "reconnecting", "reason", "auto"));
+            record("link", obj("id", id, "link", l.gen, "state", "reconnecting", "reason", system ? "system" : "auto"));
         }
         updateHold();
     }
@@ -1080,9 +1089,16 @@ public final class BleCore {
     /** {@code error}: the platform's own error, when it gave one ({domain, code, message}); it
      *  reaches the failed connect call's message and the {@code link} record unchanged. */
     public void disconnected(String id, int gen, String reason, Map<String, Object> error) {
+        disconnected(id, gen, reason, error, false);
+    }
+
+    /** {@code reconnecting}: the platform is reconnecting the device itself (iOS 17
+     *  {@code isReconnecting}); the link closes as any drop does and a new attempt waits for that
+     *  reconnect, as an {@code auto} link's would, without making the link {@code auto}. */
+    public void disconnected(String id, int gen, String reason, Map<String, Object> error, boolean reconnecting) {
         Link l = links.get(id);
         if (current(l, gen)) {
-            closeLink(l, errorReason(error, reason), true, error);
+            closeLink(l, errorReason(error, reason), true, error, reconnecting);
             return;
         }
         Closing c = closing.get(id);
@@ -1119,6 +1135,10 @@ public final class BleCore {
     }
 
     boolean closeLink(Link l, String reason, boolean down, Map<String, Object> error) {
+        return closeLink(l, reason, down, error, false);
+    }
+
+    boolean closeLink(Link l, String reason, boolean down, Map<String, Object> error, boolean systemReconnect) {
         if (l.closed) return true;
         l.closed = true;
         List<Op> ops = new ArrayList<>();
@@ -1152,13 +1172,13 @@ public final class BleCore {
         Map<String, Object> rec = obj("id", l.id, "link", l.gen, "state", "disconnected", "reason", reason);
         if (error != null) rec.put("error", error);
         record("link", rec);
-        if (l.auto && !"requested".equals(reason) && on()) {
+        if ((l.auto || systemReconnect) && !"requested".equals(reason) && on()) {
             Closing c = closing.get(l.id);
             if (c != null) {
                 c.reconnect = true;
                 c.wanted = new LinkedHashSet<>(l.wanted);
             } else {
-                startLink(l.id, true, -1, 0, true, l.wanted);
+                startLink(l.id, l.auto, -1, 0, true, l.wanted, false, systemReconnect && !l.auto);
             }
         }
         updateHold();
@@ -1446,7 +1466,7 @@ public final class BleCore {
     }
 
     private void ready(Link l) {
-        record("link", obj("id", l.id, "link", l.gen, "state", "connected", "reason", l.background && !l.unbounded ? "auto" : "requested",
+        record("link", obj("id", l.id, "link", l.gen, "state", "connected", "reason", l.system ? "system" : l.background && !l.unbounded ? "auto" : "requested",
                 "resubscribed", l.resubscribed, "failed", l.failed));
         if (l.connectCall >= 0) {
             ok(l.connectCall, obj("id", l.id, "link", l.gen, "state", "connected", "mtu", l.mtu));

@@ -2445,6 +2445,132 @@
               ]
             }
           ]
+        },
+        {
+          "name": "reconnect_system_ios_new_gen_resubscribes_without_auto",
+          "platform": "ios",
+          "steps": [
+            {
+              "do": "adapter",
+              "state": "on",
+              "out": [
+                "emit adapter {\"state\":\"on\",\"epoch\":1}"
+              ]
+            },
+            {
+              "do": "connect",
+              "call": 1,
+              "id": "7D9C1E2A-0000-4000-8000-000000000001",
+              "seconds": 10,
+              "out": [
+                "connect 7D9C1E2A-0000-4000-8000-000000000001 1 false false",
+                "timer connect 1 10000"
+              ]
+            },
+            {
+              "do": "connected",
+              "id": "7D9C1E2A-0000-4000-8000-000000000001",
+              "gen": 1,
+              "mtu": 185,
+              "out": [
+                "emit link {\"id\":\"7D9C1E2A-0000-4000-8000-000000000001\",\"link\":1,\"state\":\"connected\",\"reason\":\"requested\",\"resubscribed\":0,\"failed\":0}",
+                "reply 1 ok {\"id\":\"7D9C1E2A-0000-4000-8000-000000000001\",\"link\":1,\"state\":\"connected\",\"mtu\":185}"
+              ]
+            },
+            {
+              "do": "subscribe",
+              "call": 2,
+              "id": "7D9C1E2A-0000-4000-8000-000000000001",
+              "service": "180d",
+              "char": "2a37",
+              "out": [
+                "op 7D9C1E2A-0000-4000-8000-000000000001 1 1 sub 0000180d-0000-1000-8000-00805f9b34fb#0/00002a37-0000-1000-8000-00805f9b34fb#0 - - 0",
+                "timer op 1 10000"
+              ]
+            },
+            {
+              "do": "op_done",
+              "id": "7D9C1E2A-0000-4000-8000-000000000001",
+              "gen": 1,
+              "op": 1,
+              "data": {
+                "mode": "notify"
+              },
+              "out": [
+                "reply 2 ok {\"subscribed\":true,\"mode\":\"notify\"}"
+              ]
+            },
+            {
+              "do": "disconnected",
+              "id": "7D9C1E2A-0000-4000-8000-000000000001",
+              "gen": 1,
+              "reason": "remote",
+              "reconnecting": true,
+              "out": [
+                "emit link {\"id\":\"7D9C1E2A-0000-4000-8000-000000000001\",\"link\":1,\"state\":\"disconnected\",\"reason\":\"remote\"}",
+                "connect 7D9C1E2A-0000-4000-8000-000000000001 2 false true",
+                "emit link {\"id\":\"7D9C1E2A-0000-4000-8000-000000000001\",\"link\":2,\"state\":\"reconnecting\",\"reason\":\"system\"}"
+              ]
+            },
+            {
+              "do": "connected",
+              "id": "7D9C1E2A-0000-4000-8000-000000000001",
+              "gen": 2,
+              "mtu": 185,
+              "out": [
+                "op 7D9C1E2A-0000-4000-8000-000000000001 2 2 discover - - - 0",
+                "timer op 2 10000"
+              ]
+            },
+            {
+              "do": "op_done",
+              "id": "7D9C1E2A-0000-4000-8000-000000000001",
+              "gen": 2,
+              "op": 2,
+              "data": {
+                "services": []
+              },
+              "out": [
+                "op 7D9C1E2A-0000-4000-8000-000000000001 2 3 sub 0000180d-0000-1000-8000-00805f9b34fb#0/00002a37-0000-1000-8000-00805f9b34fb#0 - - 0",
+                "timer op 3 10000"
+              ]
+            },
+            {
+              "do": "op_done",
+              "id": "7D9C1E2A-0000-4000-8000-000000000001",
+              "gen": 2,
+              "op": 3,
+              "data": {
+                "mode": "notify"
+              },
+              "out": [
+                "emit link {\"id\":\"7D9C1E2A-0000-4000-8000-000000000001\",\"link\":2,\"state\":\"connected\",\"reason\":\"system\",\"resubscribed\":1,\"failed\":0}"
+              ]
+            },
+            {
+              "do": "links",
+              "call": 3,
+              "out": [
+                "reply 3 ok {\"links\":[{\"id\":\"7D9C1E2A-0000-4000-8000-000000000001\",\"link\":2,\"state\":\"connected\",\"auto\":false,\"mtu\":185,\"subscriptions\":[\"0000180d-0000-1000-8000-00805f9b34fb#0/00002a37-0000-1000-8000-00805f9b34fb#0\"]}]}"
+              ]
+            },
+            {
+              "do": "disconnected",
+              "id": "7D9C1E2A-0000-4000-8000-000000000001",
+              "gen": 2,
+              "reason": "remote",
+              "out": [
+                "emit link {\"id\":\"7D9C1E2A-0000-4000-8000-000000000001\",\"link\":2,\"state\":\"disconnected\",\"reason\":\"remote\"}"
+              ]
+            },
+            {
+              "do": "links",
+              "call": 4,
+              "out": [
+                "reply 4 ok {\"links\":[]}"
+              ]
+            }
+          ]
         }
       ]
     },
