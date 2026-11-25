@@ -61,8 +61,10 @@ for i, c in enumerate(plan):
         if platform == "ios" and route in ("wake_start", "wake_stop", "presence_start", "presence_stop") \
                 and a.get("code") != "platform_limit":
             problems.append("iOS wake scans and presence must answer platform_limit")
-        if platform == "ios" and route in ("associate", "associations", "disassociate") and a.get("code") != "unavailable":
-            problems.append("iOS companion association must answer unavailable")
+        if platform == "ios" and route in ("associate", "associations", "disassociate") and a.get("code") not in ("unavailable", "platform_limit"):
+            # AccessorySetupKit: the test app declares none of its Info.plist keys, so iOS 18 and later answer
+            # unavailable and earlier iOS answers platform_limit; neither shows a picker.
+            problems.append("iOS accessory association must answer unavailable (AccessorySetupKit not declared) or platform_limit (below iOS 18)")
     if problems:
         fails += 1
     summary = "-" if not isinstance(a, dict) else ("ok " + json.dumps(a.get("data"))[:90] if a.get("ok")

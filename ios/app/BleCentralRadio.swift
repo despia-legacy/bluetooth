@@ -6,8 +6,9 @@ import Foundation
 /// callbacks into core inputs and does what the core asks through `BleExtension`'s port.
 ///
 /// The manager is created only when a route needs Bluetooth (which can show the permission prompt)
-/// or when iOS relaunched the app to restore it (`restoreBluetoothCentrals`, before launch returns,
-/// as CoreBluetooth requires). Its restore identifier is the one the build declared
+/// or when iOS relaunched the app to restore a session the page started (`restoreBluetoothCentrals`,
+/// before launch returns, as CoreBluetooth requires). It never shows the "Turn On Bluetooth" alert
+/// unless the page's call asked for it (`makeManager(powerAlert:)`). Its restore identifier is the one the build declared
 /// (`claims.bluetooth_centrals: ["main"]`, full form `nativeext.ble.main`).
 ///
 /// Tokens. CoreBluetooth keeps one CBPeripheral per device, so a callback carries no attempt; the
@@ -104,20 +105,39 @@ final class BleCentralRadio: NSObject, @MainActor CBCentralManagerDelegate, @Mai
         }
     }
 
+    /// Creates the manager once. `powerAlert` is CBCentralManagerOptionShowPowerAlertKey, which Apple
+    /// defaults to true ("the system warns the user if the app instantiates the central manager when
+    /// Bluetooth service isn't available"), so it is always passed: the system's "Turn On Bluetooth"
+    /// alert shows only when the page's own call asked for it (`state` with `prompt`), never because the
+    /// manager was created (a route, or a launch that restores an earlier session).
     @discardableResult
-    func makeManager() -> CBCentralManager {
-        if let m = manager { return m }
+    func makeManager(powerAlert: Bool = false) -> CBCentralManager {
+        if let m = manager {
+            if powerAlert { requestPowerAlert() }
+            return m
+        }
         let m = CBCentralManager(delegate: self, queue: nil, options: [
             CBCentralManagerOptionRestoreIdentifierKey: restoreIdentifier,
+            CBCentralManagerOptionShowPowerAlertKey: powerAlert,
         ])
         manager = m
         return m
     }
 
+    /// The options of a manager are fixed when it is created. A page that asks for the alert after the
+    /// manager exists (created without it) with Bluetooth off gets a second, short-lived central that
+    /// carries the key; it is released once the main manager reports the radio on.
+    private var alertProbe: CBCentralManager?
+
+    private func requestPowerAlert() {
+        guard let m = manager, m.state == .poweredOff, alertProbe == nil else { return }
+        alertProbe = CBCentralManager(delegate: nil, queue: nil, options: [CBCentralManagerOptionShowPowerAlertKey: true])
+    }
+
     /// Creates the manager when needed and waits until its state is known (the first update can
     /// follow the permission prompt), or until `deadline`.
-    func ready(until deadline: DispatchTime) async {
-        let m = makeManager()
+    func ready(until deadline: DispatchTime, powerAlert: Bool = false) async {
+        let m = makeManager(powerAlert: powerAlert)
         if m.state != .unknown { return }
         let w = Waiter()
         readyWaiters.append(w)
@@ -539,6 +559,7 @@ final class BleCentralRadio: NSObject, @MainActor CBCentralManagerDelegate, @Mai
         }
         core.adapter(BleCentralRadio.name(central.state))
         guard central.state == .poweredOn else { return }
+        alertProbe = nil
         if let services = restoredScan {
             restoredScan = nil
             // The scan iOS kept for this app, handed to the core with no route waiting (call -1).

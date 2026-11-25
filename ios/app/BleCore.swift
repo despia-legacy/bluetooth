@@ -78,14 +78,12 @@ protocol BlePort: AnyObject {
     func presence(_ start: Bool, _ association: Int) -> String?
 }
 
-/// The iOS radio has no wake scan and no companion device manager: the core answers before asking.
+/// The iOS radio has no wake scan and no presence observation: the core answers before asking. The
+/// associate family is iOS's AccessorySetupKit (the port, `BleAccessories`), so it has no default.
 extension BlePort {
     func wakeStart(_ filters: BleObj, _ mode: String) -> String? { "platform_limit \(BleCore.wakeLimit)" }
     func wakeStop() {}
     func wakeSave(_ filters: BleObj?) {}
-    func associate(_ request: Int, _ params: BleObj) -> String? { "unavailable \(BleCore.associateIOS)" }
-    func associations() -> Any { "unavailable \(BleCore.associateIOS)" }
-    func disassociate(_ association: Int) -> String? { "unavailable \(BleCore.associateIOS)" }
     func presence(_ start: Bool, _ association: Int) -> String? { "platform_limit \(BleCore.presenceLimit)" }
 }
 
@@ -2794,8 +2792,8 @@ final class BleCore {
         + "background and is restored after a relaunch (CBCentralManager state restoration)"
     static let presenceLimit = "iOS has no API to observe a device's presence; a connect with no time limit "
         + "completes when the device comes in range, and state restoration relaunches the app for it"
-    static let associateIOS = "CompanionDeviceManager is Android's; this extension does not pair through "
-        + "iOS AccessorySetupKit"
+    static let associateIOSAddress = "iOS gives an app no Bluetooth address (AccessorySetupKit answers a "
+        + "Bluetooth identifier); filter by services and name"
 
     /// The running wake scan's filters (kept on disk by the port), or nil.
     private(set) var wake: BleObj?
@@ -2896,13 +2894,21 @@ final class BleCore {
     }
 
     func associate(_ call: Int, _ raw: BleObj) {
-        if !android {
-            fail(call, "unavailable", BleCore.associateIOS)
-            return
-        }
         guard let services = BleCore.uuidList(raw["services"] as? String), services.count <= 1 else {
             fail(call, "bad_value", "services is one service UUID")
             return
+        }
+        // AccessorySetupKit filters by a service UUID or a company identifier (Apple, ASDiscoveryDescriptor:
+        // "Provide at least one UUID or manufacturer ID to filter"), and its accessory has no address.
+        if !android {
+            if services.isEmpty {
+                fail(call, "bad_value", "services is one service UUID: the iOS accessory picker filters by it")
+                return
+            }
+            if let a = raw["address"], !(a is NSNull) {
+                fail(call, "bad_value", BleCore.associateIOSAddress)
+                return
+            }
         }
         let address = raw["address"]
         if let a = address, !(a is NSNull) {
@@ -2942,10 +2948,6 @@ final class BleCore {
     }
 
     func associations(_ call: Int) {
-        if !android {
-            fail(call, "unavailable", BleCore.associateIOS)
-            return
-        }
         let r = port.associations()
         if let err = r as? String {
             refused(call, err)
@@ -2962,10 +2964,6 @@ final class BleCore {
     }
 
     func disassociate(_ call: Int, _ association: Int) {
-        if !android {
-            fail(call, "unavailable", BleCore.associateIOS)
-            return
-        }
         if association <= 0 {
             fail(call, "bad_value", "association is the id associate or associations gave")
             return

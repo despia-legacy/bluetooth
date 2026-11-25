@@ -68,11 +68,15 @@ final class BlePeripheralRadio: NSObject, @MainActor CBPeripheralManagerDelegate
         makeManager()
     }
 
+    /// The power alert key is passed explicitly: Apple's default is true (the system warns when the
+    /// manager is created with Bluetooth off), and this manager is created at launch to restore a
+    /// server, so nothing may appear that the page's call did not ask for (owner items 857-858).
     @discardableResult
     func makeManager() -> CBPeripheralManager {
         if let m = manager { return m }
         let m = CBPeripheralManager(delegate: self, queue: nil, options: [
             CBPeripheralManagerOptionRestoreIdentifierKey: restoreIdentifier,
+            CBPeripheralManagerOptionShowPowerAlertKey: false,
         ])
         manager = m
         return m

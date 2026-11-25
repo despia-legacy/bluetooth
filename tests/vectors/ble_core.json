@@ -8582,7 +8582,7 @@
           ]
         },
         {
-          "name": "restoration_ios_wake_presence_are_platform_limits_associate_unavailable",
+          "name": "restoration_ios_wake_presence_are_platform_limits_associate_is_accessory_setup_kit",
           "platform": "ios",
           "steps": [
             {
@@ -8626,26 +8626,112 @@
             {
               "do": "associate",
               "call": 5,
+              "params": {},
+              "out": [
+                "reply 5 error bad_value"
+              ]
+            },
+            {
+              "do": "associate",
+              "call": 6,
+              "params": {
+                "services": "180d",
+                "address": "AA:BB:CC:DD:EE:01"
+              },
+              "out": [
+                "reply 6 error bad_value"
+              ]
+            },
+            {
+              "do": "associate",
+              "call": 7,
+              "params": {
+                "services": "180d",
+                "name": "Band"
+              },
+              "out": [
+                "associate 1 {\"services\":[\"0000180d-0000-1000-8000-00805f9b34fb\"],\"name\":\"Band\",\"address\":null,\"single\":true}"
+              ]
+            },
+            {
+              "do": "associate",
+              "call": 8,
               "params": {
                 "services": "180d"
               },
               "out": [
-                "reply 5 error unavailable"
+                "reply 8 error busy"
+              ]
+            },
+            {
+              "do": "associated",
+              "request": 1,
+              "info": {
+                "association": 3,
+                "address": null,
+                "name": "Band",
+                "id": "4F8E6A0C-2B1D-4C7E-9A53-1D2E3F4A5B6C"
+              },
+              "out": [
+                "reply 7 ok {\"association\":3,\"address\":null,\"name\":\"Band\",\"id\":\"4F8E6A0C-2B1D-4C7E-9A53-1D2E3F4A5B6C\"}"
               ]
             },
             {
               "do": "associations",
-              "call": 6,
+              "call": 9,
+              "list": [
+                {
+                  "association": 3,
+                  "address": null,
+                  "name": "Band",
+                  "id": "4F8E6A0C-2B1D-4C7E-9A53-1D2E3F4A5B6C"
+                }
+              ],
               "out": [
-                "reply 6 error unavailable"
+                "associations",
+                "reply 9 ok {\"associations\":[{\"association\":3,\"address\":null,\"name\":\"Band\",\"id\":\"4F8E6A0C-2B1D-4C7E-9A53-1D2E3F4A5B6C\",\"observing\":false}]}"
               ]
             },
             {
               "do": "disassociate",
-              "call": 7,
-              "association": 7,
+              "call": 10,
+              "association": 3,
               "out": [
-                "reply 7 error unavailable"
+                "disassociate 3",
+                "reply 10 ok {\"association\":3,\"removed\":true}"
+              ]
+            },
+            {
+              "do": "associate",
+              "call": 11,
+              "params": {
+                "services": "180d"
+              },
+              "out": [
+                "associate 2 {\"services\":[\"0000180d-0000-1000-8000-00805f9b34fb\"],\"name\":null,\"address\":null,\"single\":true}"
+              ]
+            },
+            {
+              "do": "associated",
+              "request": 2,
+              "code": "unavailable the app does not declare AccessorySetupKit",
+              "out": [
+                "reply 11 error unavailable"
+              ]
+            },
+            {
+              "do": "port",
+              "refuse": {
+                "associations": "unavailable the app does not declare AccessorySetupKit"
+              },
+              "out": []
+            },
+            {
+              "do": "associations",
+              "call": 12,
+              "out": [
+                "associations",
+                "reply 12 error unavailable"
               ]
             }
           ]

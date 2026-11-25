@@ -79,6 +79,8 @@ public final class BleExtension implements NativeExtension, BleCore.Port {
         final ExtResult.Callback reply;
         final String role;
         boolean ended;
+        /** ACCESS_BACKGROUND_LOCATION was already asked for (API 29 and 30 take it as its own request). */
+        boolean backgroundAsked;
 
         Attempt(ExtCall call, ExtResult.Callback reply, String role) {
             this.call = call;
@@ -236,10 +238,18 @@ public final class BleExtension implements NativeExtension, BleCore.Port {
                         if (!at.call.isActive()) {
                             // A late Allow: the page already has the timeout. Start nothing.
                             finish(at, ExtResult.error("timeout", "Bluetooth was allowed after the route timed out"));
-                        } else if (missingRuntime(at.role).isEmpty()) {
-                            proceed(at);
                         } else {
-                            finish(at, ExtResult.error("permission_denied", "Bluetooth access was denied"));
+                            List<String> still = missingRuntime(at.role);
+                            if (still.isEmpty()) {
+                                proceed(at);
+                            } else if (!at.backgroundAsked && still.size() == 1 && BleCore.BACKGROUND_LOCATION.equals(still.get(0))) {
+                                // The foreground grants are in: background location is asked on its own.
+                                request(at, still);
+                            } else if (still.contains(BleCore.BACKGROUND_LOCATION)) {
+                                finish(at, ExtResult.error("permission_denied", BACKGROUND_DENIED));
+                            } else {
+                                finish(at, ExtResult.error("permission_denied", "Bluetooth access was denied"));
+                            }
                         }
                     });
             restore.attach(a, ctx.resultKey("associate"));
@@ -261,9 +271,10 @@ public final class BleExtension implements NativeExtension, BleCore.Port {
     static String role(String route, Map<String, Object> params) {
         switch (route) {
             case "scan_start":
-            case "wake_start":
             case "wake_stop":
                 return "scan";
+            case "wake_start":
+                return "wake";
             case "advertise_start":
             case "advertise_stop":
             case "advertise_set_start":
@@ -320,13 +331,51 @@ public final class BleExtension implements NativeExtension, BleCore.Port {
         List<String> runtime = missingRuntime(role);
         if (installTime != null) {
             finish(at, ExtResult.error("unavailable", installTime + " is not declared in this build"));
+        } else if (!runtime.isEmpty() && runtime.contains(BleCore.BACKGROUND_LOCATION) && !declares(BleCore.BACKGROUND_LOCATION)) {
+            // Android 10 and 11: the wake scan finds nothing without it, and a manifest this extension
+            // cannot change decides whether it exists (location is dashboard-owned).
+            finish(at, ExtResult.error("unavailable", BleCore.BACKGROUND_LOCATION + " is not declared in this build: on Android 10 and 11 "
+                    + "a wake scan discovers nothing without it; declare the background_location_always_and_when_in_use permission"));
         } else if (runtime.isEmpty()) {
             proceed(at);
         } else if (permission != null) {
-            permission.launch(runtime.toArray(new String[0]));
+            request(at, runtime);
         } else {
             finish(at, ExtResult.error("permission_denied", "Bluetooth access is not granted"));
         }
+    }
+
+    static final String BACKGROUND_DENIED = "ACCESS_BACKGROUND_LOCATION was not granted: on Android 10 and 11 a wake scan "
+            + "discovers nothing without it (set the app's Location permission to Allow all the time in Settings)";
+
+    /**
+     * Asks for the missing grants. Android 11 and later ignore a request that holds a foreground location
+     * permission together with the background one ("If you request a foreground location permission and the
+     * background location permission at the same time, the system ignores the request and doesn't grant your
+     * app either permission", Android, "Request location permissions", read 2026-11-26), so the background
+     * grant goes by itself, after the others.
+     */
+    private void request(Attempt at, List<String> missing) {
+        List<String> now = new ArrayList<>(missing);
+        if (now.size() > 1) now.remove(BleCore.BACKGROUND_LOCATION);
+        if (now.contains(BleCore.BACKGROUND_LOCATION)) at.backgroundAsked = true;
+        permission.launch(now.toArray(new String[0]));
+    }
+
+    /** Whether the app's manifest declares {@code name} (declared, not necessarily granted). */
+    private boolean declares(String name) {
+        try {
+            Context app = ctx.app();
+            PackageInfo info = app.getPackageManager().getPackageInfo(app.getPackageName(), PackageManager.GET_PERMISSIONS);
+            if (info.requestedPermissions != null) {
+                for (String p : info.requestedPermissions) {
+                    if (name.equals(p)) return true;
+                }
+            }
+        } catch (PackageManager.NameNotFoundException | RuntimeException e) {
+            ctx.log("declared permissions unreadable: " + e.getClass().getSimpleName());
+        }
+        return false;
     }
 
     /** The permission is in place: hand the route to the core. Never leaves the slot taken. */

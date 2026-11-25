@@ -1296,7 +1296,8 @@
         "ios/app/BleCore.swift",
         "ios/app/BleCentralRadio.swift",
         "ios/app/BlePeripheralRadio.swift",
-        "ios/app/BleServerMirror.swift"
+        "ios/app/BleServerMirror.swift",
+        "ios/app/BleAccessories.swift"
       ],
       "frameworks": [
         "CoreBluetooth"

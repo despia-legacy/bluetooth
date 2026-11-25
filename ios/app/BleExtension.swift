@@ -8,9 +8,12 @@ import Foundation
 /// port is an isolated conformance (`@MainActor BlePort`), so the core runs on the main actor too.
 ///
 /// The CBCentralManager is created only when a route needs Bluetooth (the permission prompt can
-/// follow) or at launch through `restoreBluetoothCentrals` when the app is already authorized (no
-/// prompt), so iOS can restore it: a scene-based app gets no launchOptions to tell a Bluetooth
-/// relaunch (Apple, "Central Manager State Restoration Options"). The
+/// follow), or at launch through `restoreBluetoothCentrals` when the page already used Bluetooth in an
+/// earlier run (`ble/central-armed`) and the app is authorized (no prompt), so iOS can restore it: a
+/// scene-based app gets no launchOptions to tell a Bluetooth relaunch (Apple, "Central Manager State
+/// Restoration Options"). A first launch, and an app whose page never called Bluetooth, creates none.
+/// No creation shows the system's "Turn On Bluetooth" alert (CBCentralManagerOptionShowPowerAlertKey
+/// is false) unless the page's own call asked for it: `state` with `prompt`. The
 /// CBPeripheralManager is created only by a server route, or at launch when `ble-server.json`
 /// exists (iOS restores a peripheral manager only when it is created again during launch). `state`
 /// without `prompt` never creates a manager before the app is authorized, so it never prompts.
@@ -24,12 +27,16 @@ final class BleExtension: NSObject, NativeExtension, @MainActor BlePort {
     private var core: BleCore!
     private var radio: BleCentralRadio!
     private var server: BlePeripheralRadio!
+    /// associate, associations, disassociate: AccessorySetupKit (iOS 18).
+    private var accessories: BleAccessories!
     private var nextCall = 0
     private var calls: [Int: Waiting] = [:]
     private var inBackground = false
     private var mirror: BleServerMirror!
     /// The disk-durable journal: `ble/journal.jsonl` (this run) and `ble/journal-prev.jsonl`.
     private var journalFile: URL!
+    /// `ble/central-armed`: exists once a page's call created the central with Bluetooth allowed.
+    private var armedFile: URL!
     private var persistPending = false
     static let persistMs = 250
 
@@ -52,7 +59,10 @@ final class BleExtension: NSObject, NativeExtension, @MainActor BlePort {
         // Both managers watch the same radio; whichever settles tells the core (it ignores a repeat).
         server.onState = { [weak self] state in self?.core.adapter(state) }
         radio.onL2capOpened = { [weak self] n, channel, code in self?.l2capOpened(n, channel, code) }
+        accessories = BleAccessories(dataDirectory: context.dataDirectory, log: { [weak context] in context?.log($0) })
+        accessories.answer = { [weak self] request, info, err in self?.core.associated(request, info, err) }
         server.launch()
+        accessories.launch()
     }
 
     /// Launch: the previous process's journal becomes `events?run=<previousRun>`; this run gets a
@@ -61,6 +71,7 @@ final class BleExtension: NSObject, NativeExtension, @MainActor BlePort {
         let dir = ctx.dataDirectory.appendingPathComponent("ble", isDirectory: true)
         try? FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
         journalFile = dir.appendingPathComponent("journal.jsonl")
+        armedFile = dir.appendingPathComponent("central-armed")
         let prev = dir.appendingPathComponent("journal-prev.jsonl")
         if let text = try? String(contentsOf: journalFile, encoding: .utf8) {
             let lines = text.split(separator: "\n", omittingEmptySubsequences: true)
@@ -124,12 +135,23 @@ final class BleExtension: NSObject, NativeExtension, @MainActor BlePort {
     }
 
     /// Every launch (the runtime cannot tell a Bluetooth relaunch in a scene-based app): recreate the
-    /// central with its restore identifier when that cannot prompt; willRestoreState then hands back
-    /// what iOS kept, and with nothing kept the manager only reports its state.
+    /// central with its restore identifier when the page used it before and that cannot prompt;
+    /// willRestoreState then hands back what iOS kept, and with nothing kept the manager only reports
+    /// its state. Without the page's earlier call nothing is created at launch (owner items 857-858:
+    /// nothing starts without the page's call), and the manager never carries the power alert.
     func restoreBluetoothCentrals(_ identifiers: [String]) {
         guard identifiers.contains(ctx.bluetoothRestoreIdentifier("main")),
+              FileManager.default.fileExists(atPath: armedFile.path),
               CBManager.authorization == .allowedAlways else { return }
         _ = radio.makeManager()
+    }
+
+    /// A page's call created the central and Bluetooth is allowed: later launches may restore it.
+    private func armRestore() {
+        guard radio.hasManager, CBManager.authorization == .allowedAlways,
+              !FileManager.default.fileExists(atPath: armedFile.path) else { return }
+        FileManager.default.createFile(atPath: armedFile.path, contents: Data(),
+                                       attributes: [.protectionKey: FileProtectionType.completeUntilFirstUserAuthentication])
     }
 
     func sceneDidChange(_ phase: NativeExtScenePhase) {
@@ -164,6 +186,7 @@ final class BleExtension: NSObject, NativeExtension, @MainActor BlePort {
         } else {
             guard BleExtension.radioRoutes.contains(call.route) else { return .error(code: "not_registered", message: call.route) }
             await radio.ready(until: call.deadline)
+            armRestore()
             guard call.isActive else { return .error(code: "timeout", message: "Bluetooth was not ready before the route timed out") }
         }
         if CBManager.authorization == .denied || CBManager.authorization == .restricted {
@@ -179,7 +202,8 @@ final class BleExtension: NSObject, NativeExtension, @MainActor BlePort {
                 await server.ready(until: call.deadline)
                 guard call.isActive else { return .error(code: "timeout", message: "state timed out") }
             } else {
-                await radio.ready(until: call.deadline)
+                await radio.ready(until: call.deadline, powerAlert: prompt)
+                armRestore()
                 guard call.isActive else { return .error(code: "timeout", message: "state timed out") }
             }
         }
@@ -301,8 +325,8 @@ final class BleExtension: NSObject, NativeExtension, @MainActor BlePort {
             for k in p.keys.sorted() { raw[k] = p[k] }
             core.advertiseSetStart(c, raw)
         case "advertise_set_stop": core.advertiseSetStop(c, int("set", 0))
-        // Android restoration routes: the core answers platform_limit (wake, presence) or unavailable
-        // (associate family) on iOS; the iOS restoration is CBCentralManager state restoration.
+        // Android restoration routes: the core answers platform_limit (wake, presence) on iOS, whose restoration
+        // is CBCentralManager state restoration; the associate family is AccessorySetupKit (BleAccessories).
         case "wake_start":
             core.wakeStart(c, str("services"), str("names"), int("manufacturer_id", -1), str("manufacturer_hex"), str("mode"))
         case "wake_stop": core.wakeStop(c)
@@ -401,6 +425,12 @@ final class BleExtension: NSObject, NativeExtension, @MainActor BlePort {
     }
 
     func advertiseSetStop(_ set: Int) {}
+
+    // MARK: BlePort: accessory setup (AccessorySetupKit)
+
+    func associate(_ request: Int, _ params: BleObj) -> String? { accessories.associate(request, params) }
+    func associations() -> Any { accessories.associations() }
+    func disassociate(_ association: Int) -> String? { accessories.disassociate(association) }
 
     /// Whether this build declares both Bluetooth background modes (the manifest's info_plist rows).
     static var backgroundModes: Bool {

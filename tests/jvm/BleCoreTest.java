@@ -792,6 +792,7 @@ public final class BleCoreTest {
         String bt = "android.permission.BLUETOOTH", admin = "android.permission.BLUETOOTH_ADMIN";
         String scan = "android.permission.BLUETOOTH_SCAN", connect = "android.permission.BLUETOOTH_CONNECT";
         String adv = "android.permission.BLUETOOTH_ADVERTISE", fine = "android.permission.ACCESS_FINE_LOCATION";
+        String bg = "android.permission.ACCESS_BACKGROUND_LOCATION";
         Object[][] rows = {
                 {30, "scan", false, Arrays.asList(bt, admin), Arrays.asList(fine)},
                 {30, "scan", true, Arrays.asList(bt, admin), Arrays.asList(fine)},
@@ -808,6 +809,13 @@ public final class BleCoreTest {
                 {36, "advertise", true, Arrays.asList(), Arrays.asList(adv, connect)},
                 {36, "scan", false, Arrays.asList(), Arrays.asList(scan, fine)},
                 {24, "advertise", false, Arrays.asList(bt, admin), Arrays.asList()},
+                // wake_start: a scan with no process needs background location on Android 10 and 11 only.
+                {29, "wake", false, Arrays.asList(bt, admin), Arrays.asList(fine, bg)},
+                {30, "wake", false, Arrays.asList(bt, admin), Arrays.asList(fine, bg)},
+                {30, "scan", false, Arrays.asList(bt, admin), Arrays.asList(fine)},
+                {28, "wake", false, Arrays.asList(bt, admin), Arrays.asList(fine)},
+                {31, "wake", false, Arrays.asList(), Arrays.asList(scan, fine)},
+                {34, "wake", true, Arrays.asList(), Arrays.asList(scan)},
         };
         List<String> bad = new ArrayList<>();
         for (Object[] r : rows) {

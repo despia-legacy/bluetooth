@@ -5,7 +5,7 @@
 - the answer has the standard envelope;
 - an error carries a documented code and message;
 - `state` answers;
-- on iOS, the bond routes, `advertise_set_start`, the wake scan and presence routes answer `platform_limit`, and the companion association routes answer `unavailable`.
+- on iOS, the bond routes, `advertise_set_start`, the wake scan and presence routes answer `platform_limit`, and the accessory association routes answer `unavailable` (AccessorySetupKit is not declared in the test app's Info.plist) or, below iOS 18, `platform_limit`.
 
 ```sh
 python3 -I tests/route/check_routes.py ios tests/route/plan-ios.json results.jsonl

@@ -128,7 +128,8 @@ public final class BleCore {
         void advertiseSetStop(int set);
 
         // Android restoration: a scan the system keeps for the app when its process is gone, and the
-        // companion device presence of devices the app associated (the iOS core never asks).
+        // companion device presence of devices the app associated (the iOS core asks only for the
+        // associate family: AccessorySetupKit; it never asks for a wake scan or presence).
 
         /** Start the PendingIntent scan with these filters and mode. null when accepted, else "code message". */
         String wakeStart(Map<String, Object> filters, String mode);
@@ -557,10 +558,19 @@ public final class BleCore {
 
     // ---- Android permissions (the Swift twin has no counterpart: iOS has one authorization) --
 
-    /** Install-time and runtime permissions a role needs on an API level; {install, runtime}. */
+    public static final String BACKGROUND_LOCATION = "android.permission.ACCESS_BACKGROUND_LOCATION";
+
+    /**
+     * Install-time and runtime permissions a role needs on an API level; {install, runtime}. The role
+     * {@code wake} (wake_start) is a scan that runs while the app has no process: on Android 10 and 11
+     * (API 29 and 30) it also needs ACCESS_BACKGROUND_LOCATION (Android, "Bluetooth permissions": "If your
+     * app supports a service and can run on Android 10 (API level 29) or Android 11, you must also declare
+     * the ACCESS_BACKGROUND_LOCATION permission to discover Bluetooth devices", read 2026-11-26).
+     */
     public static List<List<String>> permissions(int sdk, String role, boolean neverForLocation) {
         List<String> install = new ArrayList<>(), runtime = new ArrayList<>();
-        boolean scan = "scan".equals(role) || "central".equals(role);
+        boolean wake = "wake".equals(role);
+        boolean scan = "scan".equals(role) || "central".equals(role) || wake;
         boolean connect = "connect".equals(role) || "central".equals(role) || "advertise".equals(role);
         boolean advertise = "advertise".equals(role);
         if (sdk >= 31) {
@@ -574,6 +584,7 @@ public final class BleCore {
             install.add("android.permission.BLUETOOTH");
             if (scan || advertise) install.add("android.permission.BLUETOOTH_ADMIN");
             if (scan) runtime.add("android.permission.ACCESS_FINE_LOCATION");
+            if (wake && (sdk == 29 || sdk == 30)) runtime.add(BACKGROUND_LOCATION);
         }
         List<List<String>> out = new ArrayList<>();
         out.add(install);
@@ -2971,8 +2982,8 @@ public final class BleCore {
             + "background and is restored after a relaunch (CBCentralManager state restoration)";
     static final String PRESENCE_LIMIT = "iOS has no API to observe a device's presence; a connect with no time limit "
             + "completes when the device comes in range, and state restoration relaunches the app for it";
-    static final String ASSOCIATE_IOS = "CompanionDeviceManager is Android's; this extension does not pair through "
-            + "iOS AccessorySetupKit";
+    static final String ASSOCIATE_IOS_ADDRESS = "iOS gives an app no Bluetooth address (AccessorySetupKit answers a "
+            + "Bluetooth identifier); filter by services and name";
 
     /** The running wake scan's filters (kept on disk by the port), or null. */
     Map<String, Object> wake;
@@ -3091,14 +3102,22 @@ public final class BleCore {
     }
 
     public void associate(int call, Map<String, Object> raw) {
-        if (!android) {
-            fail(call, "unavailable", ASSOCIATE_IOS);
-            return;
-        }
         List<String> services = uuidList((String) raw.get("services"));
         if (services == null || services.size() > 1) {
             fail(call, "bad_value", "services is one service UUID");
             return;
+        }
+        // AccessorySetupKit filters by a service UUID or a company identifier (Apple, ASDiscoveryDescriptor:
+        // "Provide at least one UUID or manufacturer ID to filter"), and its accessory has no address.
+        if (!android) {
+            if (services.isEmpty()) {
+                fail(call, "bad_value", "services is one service UUID: the iOS accessory picker filters by it");
+                return;
+            }
+            if (raw.get("address") != null) {
+                fail(call, "bad_value", ASSOCIATE_IOS_ADDRESS);
+                return;
+            }
         }
         Object name = raw.get("name");
         Object address = raw.get("address");
@@ -3140,10 +3159,6 @@ public final class BleCore {
     }
 
     public void associations(int call) {
-        if (!android) {
-            fail(call, "unavailable", ASSOCIATE_IOS);
-            return;
-        }
         Object r = port.associations();
         if (r instanceof String) {
             refused(call, (String) r);
@@ -3168,10 +3183,6 @@ public final class BleCore {
     }
 
     public void disassociate(int call, int association) {
-        if (!android) {
-            fail(call, "unavailable", ASSOCIATE_IOS);
-            return;
-        }
         if (association <= 0) {
             fail(call, "bad_value", "association is the id associate or associations gave");
             return;
