@@ -126,6 +126,29 @@ public final class BleCore {
         String advertiseSetStart(int epoch, int set, Map<String, Object> params);
 
         void advertiseSetStop(int set);
+
+        // Android restoration: a scan the system keeps for the app when its process is gone, and the
+        // companion device presence of devices the app associated (the iOS core never asks).
+
+        /** Start the PendingIntent scan with these filters and mode. null when accepted, else "code message". */
+        String wakeStart(Map<String, Object> filters, String mode);
+
+        void wakeStop();
+
+        /** Keep the running wake scan's filters across processes (null: none runs). */
+        void wakeSave(Map<String, Object> filters);
+
+        /** Show the system's companion device chooser as request {@code request}. null when shown (associated follows). */
+        String associate(int request, Map<String, Object> params);
+
+        /** The app's associations as records, or "code message". */
+        Object associations();
+
+        /** Remove association {@code association}. null when removed, else "code message". */
+        String disassociate(int association);
+
+        /** Start or stop observing the presence of association {@code association}. null when accepted, else "code message". */
+        String presence(boolean start, int association);
     }
 
     public static final int WRITE_MAX = 512;
@@ -2940,6 +2963,259 @@ public final class BleCore {
         int k = 0;
         for (AdvSet a : sets.values()) if (a.on) k++;
         return k;
+    }
+
+    // ---- Android restoration: wake scan and companion device presence -------------------------------
+
+    static final String WAKE_LIMIT = "iOS has no scan that outlives the app: a scan_start with services continues in the "
+            + "background and is restored after a relaunch (CBCentralManager state restoration)";
+    static final String PRESENCE_LIMIT = "iOS has no API to observe a device's presence; a connect with no time limit "
+            + "completes when the device comes in range, and state restoration relaunches the app for it";
+    static final String ASSOCIATE_IOS = "CompanionDeviceManager is Android's; this extension does not pair through "
+            + "iOS AccessorySetupKit";
+
+    /** The running wake scan's filters (kept on disk by the port), or null. */
+    Map<String, Object> wake;
+    /** The open associate request's call, or -1. */
+    int associateCall = -1;
+    int nextAssociate;
+    final Set<Integer> observing = new LinkedHashSet<>();
+
+    /** Launch: the wake scan a previous process started is still the system's (a PendingIntent scan outlives the process). */
+    public void loadWake(Map<String, Object> filters) {
+        wake = filters;
+    }
+
+    public boolean waking() {
+        return wake != null;
+    }
+
+    /** Launch: the presence observations a previous process started stay the system's. */
+    public void loadObserving(List<Integer> list) {
+        observing.clear();
+        if (list != null) observing.addAll(list);
+    }
+
+    public List<Integer> observingList() {
+        return new ArrayList<>(observing);
+    }
+
+    public void wakeStart(int call, String servicesCsv, String namesCsv, int manufacturerId, String manufacturerHex, String mode) {
+        if (!android) {
+            fail(call, "platform_limit", WAKE_LIMIT);
+            return;
+        }
+        List<String> services = uuidList(servicesCsv);
+        if (services == null) {
+            fail(call, "bad_value", "services must be up to 20 UUIDs");
+            return;
+        }
+        List<String> names = nameList(namesCsv);
+        if (names == null) {
+            fail(call, "bad_value", "names must be up to 10 comma-separated names of 1 to 248 bytes");
+            return;
+        }
+        byte[] prefix = manufacturerHex == null ? null : fromHex(manufacturerHex);
+        if (manufacturerId > 0xFFFF || (manufacturerHex != null && (prefix == null || manufacturerId < 0))) {
+            fail(call, "bad_value", "manufacturer_id is 0 to 65535; manufacturer_hex is hex bytes and needs manufacturer_id");
+            return;
+        }
+        if (services.isEmpty() && names.isEmpty() && manufacturerId < 0) {
+            fail(call, "filter_required", "a wake scan needs a service, name or manufacturer filter");
+            return;
+        }
+        if (!on()) {
+            fail(call, "unavailable", "Bluetooth is " + adapter);
+            return;
+        }
+        if (wake != null) {
+            fail(call, "busy", "a wake scan is already running; wake_stop ends it");
+            return;
+        }
+        Map<String, Object> f = obj("services", new ArrayList<Object>(services), "names", new ArrayList<Object>(names));
+        if (manufacturerId >= 0) {
+            f.put("manufacturer_id", manufacturerId);
+            f.put("manufacturer_hex", prefix == null ? "" : hex(prefix));
+        }
+        String m = mode == null ? "low_power" : mode;
+        f.put("mode", m);
+        String err = port.wakeStart(f, m);
+        if (err != null) {
+            refused(call, err);
+            return;
+        }
+        wake = f;
+        port.wakeSave(f);
+        record("wake", obj("state", "started", "filters", f));
+        ok(call, obj("state", "started", "filters", f));
+    }
+
+    public void wakeStop(int call) {
+        if (!android) {
+            fail(call, "platform_limit", WAKE_LIMIT);
+            return;
+        }
+        if (wake == null) {
+            ok(call, obj("state", "stopped", "stopped", false));
+            return;
+        }
+        port.wakeStop();
+        wake = null;
+        port.wakeSave(null);
+        record("wake", obj("state", "stopped", "reason", "requested"));
+        ok(call, obj("state", "stopped", "stopped", true));
+    }
+
+    /**
+     * The system delivered the wake scan's PendingIntent: {@code devices} (records with id and the
+     * advertisement fields) or {@code error} (a ScanCallback SCAN_FAILED code, which ends the scan).
+     */
+    public void wakeDelivered(List<Map<String, Object>> devices, int error) {
+        if (wake == null) {
+            stale("wake delivery");
+            return;
+        }
+        if (error > 0) {
+            port.wakeStop();
+            wake = null;
+            port.wakeSave(null);
+            record("wake", obj("state", "failed", "error", error));
+            return;
+        }
+        List<Object> list = new ArrayList<>();
+        for (Map<String, Object> d : devices) {
+            if (list.size() >= DEVICES_MAX) break;
+            list.add(d);
+        }
+        if (!list.isEmpty()) record("wake", obj("state", "results", "devices", list));
+    }
+
+    public void associate(int call, Map<String, Object> raw) {
+        if (!android) {
+            fail(call, "unavailable", ASSOCIATE_IOS);
+            return;
+        }
+        List<String> services = uuidList((String) raw.get("services"));
+        if (services == null || services.size() > 1) {
+            fail(call, "bad_value", "services is one service UUID");
+            return;
+        }
+        Object name = raw.get("name");
+        Object address = raw.get("address");
+        if (address != null && !(address instanceof String && ((String) address).matches("[0-9A-F]{2}(:[0-9A-F]{2}){5}"))) {
+            fail(call, "bad_value", "address is a Bluetooth address like 00:11:22:AA:BB:CC");
+            return;
+        }
+        if (associateCall >= 0 && port.isActive(associateCall)) {
+            fail(call, "busy", "the device chooser is already open");
+            return;
+        }
+        Map<String, Object> p = obj("services", new ArrayList<Object>(services), "name", name, "address", address,
+                "single", !Boolean.FALSE.equals(raw.get("single")));
+        int r = ++nextAssociate;
+        String err = port.associate(r, p);
+        if (err != null) {
+            refused(call, err);
+            return;
+        }
+        associateCall = call;
+        assocRequest = r;
+    }
+
+    int assocRequest;
+
+    /** The chooser of request {@code r} ended: {@code info} (association, address, name) or the refusal "code message". */
+    public void associated(int r, Map<String, Object> info, String err) {
+        if (r != assocRequest || associateCall < 0) {
+            stale("associated " + r);
+            return;
+        }
+        int call = associateCall;
+        associateCall = -1;
+        if (err != null) {
+            refused(call, err);
+            return;
+        }
+        ok(call, info);
+    }
+
+    public void associations(int call) {
+        if (!android) {
+            fail(call, "unavailable", ASSOCIATE_IOS);
+            return;
+        }
+        Object r = port.associations();
+        if (r instanceof String) {
+            refused(call, (String) r);
+            return;
+        }
+        List<Object> list = new ArrayList<>();
+        for (Object o : (List<?>) r) {
+            if (o instanceof Map) {
+                Map<String, Object> m = obj();
+                m.putAll(castObj(o));
+                Object a = m.get("association");
+                m.put("observing", a instanceof Integer && observing.contains(a));
+                list.add(m);
+            }
+        }
+        ok(call, obj("associations", list));
+    }
+
+    @SuppressWarnings("unchecked")
+    private static Map<String, Object> castObj(Object o) {
+        return (Map<String, Object>) o;
+    }
+
+    public void disassociate(int call, int association) {
+        if (!android) {
+            fail(call, "unavailable", ASSOCIATE_IOS);
+            return;
+        }
+        if (association <= 0) {
+            fail(call, "bad_value", "association is the id associate or associations gave");
+            return;
+        }
+        String err = port.disassociate(association);
+        if (err != null) {
+            refused(call, err);
+            return;
+        }
+        observing.remove(association);
+        ok(call, obj("association", association, "removed", true));
+    }
+
+    public void presence(int call, int association, boolean start) {
+        if (!android) {
+            fail(call, "platform_limit", PRESENCE_LIMIT);
+            return;
+        }
+        if (association <= 0) {
+            fail(call, "bad_value", "association is the id associate or associations gave");
+            return;
+        }
+        if (!start && !observing.contains(association)) {
+            ok(call, obj("association", association, "observing", false, "stopped", false));
+            return;
+        }
+        String err = port.presence(start, association);
+        if (err != null) {
+            refused(call, err);
+            return;
+        }
+        if (start) observing.add(association);
+        else observing.remove(association);
+        ok(call, start ? obj("association", association, "observing", true)
+                : obj("association", association, "observing", false, "stopped", true));
+    }
+
+    /**
+     * The system reported a presence change of an associated device (CompanionDeviceService, also when
+     * it started the process for it): appeared, disappeared, connected or disconnected.
+     */
+    public void presenceEvent(int association, String address, String event) {
+        if (association > 0) observing.add(association);
+        record("presence", obj("association", association, "address", address, "event", event));
     }
 
     // ---- adapter changes of the server ----------------------------------------------------------

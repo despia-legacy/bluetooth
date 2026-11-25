@@ -59,6 +59,9 @@ public final class BleExtension implements NativeExtension, BleCore.Port {
     private boolean radioStarted;
     private ComponentActivity registeredOn;
     private ActivityResultLauncher<String[]> permission;
+    private BleRestore restore;
+    /** The created extension, for the wake receiver and the presence service the system starts the process for. */
+    static volatile BleExtension instance;
     private int startedActivities;
     /** The route waiting for a permission answer; one at a time. */
     private Attempt pending;
@@ -102,6 +105,34 @@ public final class BleExtension implements NativeExtension, BleCore.Port {
         radio = new AndroidRadio(context.app(), main, core);
         mirror = new ServerMirror(context, main);
         openJournal(run);
+        restore = new BleRestore(context.app(), new File(ctx.dataDir(), "ble"), chooser);
+        core.loadWake(restore.savedWake());
+        core.loadObserving(restore.savedObserving());
+        instance = this;
+    }
+
+    // ---- Android restoration: what the system delivers to a process it started -----------------------
+
+    /** The companion device chooser's end (BleRestore, main thread). */
+    private final BleRestore.Chooser chooser = (request, info, err) -> core.associated(request, info, err);
+
+    /** The wake scan's PendingIntent delivery (BleWakeReceiver, main thread). */
+    void wakeDelivered(List<Map<String, Object>> devices, int error) {
+        core.wakeDelivered(devices, error);
+    }
+
+    /** A CompanionDeviceService presence change (BlePresenceService, main thread). */
+    void presenceEvent(int association, String address, String event) {
+        core.presenceEvent(association, address, event);
+        restore.saveObserving(core.observingList());
+    }
+
+    String addressOf(int association) {
+        return restore.addressOf(association);
+    }
+
+    int idForAddress(String address) {
+        return restore.idForAddress(address);
     }
 
     /**
@@ -211,9 +242,11 @@ public final class BleExtension implements NativeExtension, BleCore.Port {
                             finish(at, ExtResult.error("permission_denied", "Bluetooth access was denied"));
                         }
                     });
+            restore.attach(a, ctx.resultKey("associate"));
         } else if (event == ActivityEvent.DESTROYED && registeredOn == a && permission != null) {
             permission.unregister();
             permission = null;
+            restore.detach();
             registeredOn = null;
             // Recreated (configuration, or the system reclaimed it): the permission answer reaches
             // the launcher the new activity registers under the same key, so the route waits.
@@ -228,6 +261,8 @@ public final class BleExtension implements NativeExtension, BleCore.Port {
     static String role(String route, Map<String, Object> params) {
         switch (route) {
             case "scan_start":
+            case "wake_start":
+            case "wake_stop":
                 return "scan";
             case "advertise_start":
             case "advertise_stop":
@@ -531,6 +566,32 @@ public final class BleExtension implements NativeExtension, BleCore.Port {
             case "advertise_set_stop":
                 core.advertiseSetStop(c, num(call, "set", 0));
                 return;
+            case "wake_start":
+                core.wakeStart(c, str(call, "services"), str(call, "names"), num(call, "manufacturer_id", -1),
+                        str(call, "manufacturer_hex"), str(call, "mode"));
+                return;
+            case "wake_stop":
+                core.wakeStop(c);
+                return;
+            case "associate": {
+                Map<String, Object> raw = BleCore.obj();
+                for (String k : new String[]{"services", "name", "address"}) if (str(call, k) != null) raw.put(k, str(call, k));
+                if (call.params.get("single") instanceof Boolean) raw.put("single", call.params.get("single"));
+                core.associate(c, raw);
+                return;
+            }
+            case "associations":
+                core.associations(c);
+                return;
+            case "disassociate":
+                core.disassociate(c, num(call, "association", 0));
+                restore.saveObserving(core.observingList());
+                return;
+            case "presence_start":
+            case "presence_stop":
+                core.presence(c, num(call, "association", 0), "presence_start".equals(call.route));
+                restore.saveObserving(core.observingList());
+                return;
             default:
                 calls.remove(c);
                 reply.reply(ExtResult.error("not_registered", call.route));
@@ -541,6 +602,8 @@ public final class BleExtension implements NativeExtension, BleCore.Port {
         Map<String, Object> data = BleCore.obj("state", radio.adapterState(),
                 "authorization", missingRuntime("central").isEmpty() && missingInstallTime("central") == null ? "granted" : "not_granted");
         data.putAll(core.stateFields());
+        data.put("wake", core.wake);
+        data.put("observing", new ArrayList<Object>(core.observingList()));
         data.put("server", mirror.status());
         reply(c, true, null, null, data);
     }
@@ -711,6 +774,41 @@ public final class BleExtension implements NativeExtension, BleCore.Port {
     @Override
     public void advertiseSetStop(int set) {
         radio.advertiseSetStop(set);
+    }
+
+    @Override
+    public String wakeStart(Map<String, Object> filters, String mode) {
+        return restore.wakeStart(filters, mode);
+    }
+
+    @Override
+    public void wakeStop() {
+        restore.wakeStop();
+    }
+
+    @Override
+    public void wakeSave(Map<String, Object> filters) {
+        restore.saveWake(filters);
+    }
+
+    @Override
+    public String associate(int request, Map<String, Object> params) {
+        return restore.associate(request, params, main);
+    }
+
+    @Override
+    public Object associations() {
+        return restore.associations();
+    }
+
+    @Override
+    public String disassociate(int association) {
+        return restore.disassociate(association);
+    }
+
+    @Override
+    public String presence(boolean start, int association) {
+        return restore.presence(start, association);
     }
 
     @Override

@@ -15,11 +15,33 @@
          typed permission and the matching foregroundServiceType). -->
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE_CONNECTED_DEVICE" />
+    <!-- presence_start: CompanionDeviceManager.startObservingDevicePresence (API 31) needs this normal
+         permission; associate and presence need the companion device feature, which not every device
+         has, so the app still installs without it (the routes answer unavailable). -->
+    <uses-permission android:name="android.permission.REQUEST_OBSERVE_COMPANION_DEVICE_PRESENCE" />
+    <uses-feature
+        android:name="android.software.companion_device_setup"
+        android:required="false" />
 
     <application>
         <service
             android:name="despia.ext.ble.BleLinkService"
             android:exported="false"
             android:foregroundServiceType="connectedDevice" />
+        <!-- wake_start: the target of the wake scan's PendingIntent (BluetoothLeScanner.startScan with a
+             PendingIntent, API 26); only this app's explicit intent reaches it. -->
+        <receiver
+            android:name="despia.ext.ble.BleWakeReceiver"
+            android:exported="false" />
+        <!-- presence_start: the system binds it for an observed associated device and starts the process
+             (CompanionDeviceService, API 31; the bind permission keeps other apps out). -->
+        <service
+            android:name="despia.ext.ble.BlePresenceService"
+            android:exported="true"
+            android:permission="android.permission.BIND_COMPANION_DEVICE_SERVICE">
+            <intent-filter>
+                <action android:name="android.companion.CompanionDeviceService" />
+            </intent-filter>
+        </service>
     </application>
 </manifest>

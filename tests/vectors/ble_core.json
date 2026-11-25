@@ -8120,6 +8120,537 @@
           ]
         }
       ]
+    },
+    "restoration": {
+      "row": "BL-P15",
+      "scenarios": [
+        {
+          "name": "restoration_wake_rules_start_deliver_stop_android",
+          "platform": "android",
+          "steps": [
+            {
+              "do": "wake_start",
+              "call": 1,
+              "out": [
+                "reply 1 error filter_required"
+              ]
+            },
+            {
+              "do": "wake_start",
+              "call": 2,
+              "services": "180d",
+              "out": [
+                "reply 2 error unavailable"
+              ]
+            },
+            {
+              "do": "adapter",
+              "state": "on",
+              "out": [
+                "emit adapter {\"state\":\"on\",\"epoch\":1}"
+              ]
+            },
+            {
+              "do": "wake_start",
+              "call": 3,
+              "services": "zz",
+              "out": [
+                "reply 3 error bad_value"
+              ]
+            },
+            {
+              "do": "wake_start",
+              "call": 4,
+              "manufacturer_hex": "0215",
+              "out": [
+                "reply 4 error bad_value"
+              ]
+            },
+            {
+              "do": "wake_start",
+              "call": 5,
+              "services": "180d",
+              "manufacturer_id": 76,
+              "manufacturer_hex": "0215",
+              "mode": "balanced",
+              "out": [
+                "wake_start {\"services\":[\"0000180d-0000-1000-8000-00805f9b34fb\"],\"names\":[],\"manufacturer_id\":76,\"manufacturer_hex\":\"0215\",\"mode\":\"balanced\"} balanced",
+                "wake_save {\"services\":[\"0000180d-0000-1000-8000-00805f9b34fb\"],\"names\":[],\"manufacturer_id\":76,\"manufacturer_hex\":\"0215\",\"mode\":\"balanced\"}",
+                "emit wake {\"state\":\"started\",\"filters\":{\"services\":[\"0000180d-0000-1000-8000-00805f9b34fb\"],\"names\":[],\"manufacturer_id\":76,\"manufacturer_hex\":\"0215\",\"mode\":\"balanced\"}}",
+                "reply 5 ok {\"state\":\"started\",\"filters\":{\"services\":[\"0000180d-0000-1000-8000-00805f9b34fb\"],\"names\":[],\"manufacturer_id\":76,\"manufacturer_hex\":\"0215\",\"mode\":\"balanced\"}}"
+              ]
+            },
+            {
+              "do": "state",
+              "out": [
+                "state {\"scanning\":false,\"advertising\":false,\"links\":0,\"centrals\":0,\"keepAlive\":false,\"epoch\":1,\"run\":\"r1\",\"previousRun\":null}"
+              ]
+            },
+            {
+              "do": "wake_start",
+              "call": 6,
+              "names": "Band",
+              "out": [
+                "reply 6 error busy"
+              ]
+            },
+            {
+              "do": "wake_delivered",
+              "devices": [
+                {
+                  "id": "AA:BB:CC:DD:EE:01",
+                  "name": "Band",
+                  "rssi": -60,
+                  "services": [
+                    "0000180d-0000-1000-8000-00805f9b34fb"
+                  ]
+                }
+              ],
+              "out": [
+                "emit wake {\"state\":\"results\",\"devices\":[{\"id\":\"AA:BB:CC:DD:EE:01\",\"name\":\"Band\",\"rssi\":-60,\"services\":[\"0000180d-0000-1000-8000-00805f9b34fb\"]}]}"
+              ]
+            },
+            {
+              "do": "wake_delivered",
+              "devices": [],
+              "out": []
+            },
+            {
+              "do": "wake_stop",
+              "call": 7,
+              "out": [
+                "wake_stop",
+                "wake_save -",
+                "emit wake {\"state\":\"stopped\",\"reason\":\"requested\"}",
+                "reply 7 ok {\"state\":\"stopped\",\"stopped\":true}"
+              ]
+            },
+            {
+              "do": "wake_stop",
+              "call": 8,
+              "out": [
+                "reply 8 ok {\"state\":\"stopped\",\"stopped\":false}"
+              ]
+            },
+            {
+              "do": "wake_delivered",
+              "devices": [
+                {
+                  "id": "AA:BB:CC:DD:EE:01",
+                  "name": "Band",
+                  "rssi": -60,
+                  "services": [
+                    "0000180d-0000-1000-8000-00805f9b34fb"
+                  ]
+                }
+              ],
+              "out": [
+                "stale wake delivery"
+              ]
+            },
+            {
+              "do": "stale_count",
+              "out": [
+                "stale_count 1"
+              ]
+            }
+          ]
+        },
+        {
+          "name": "restoration_wake_relaunch_failure_and_refusal_android",
+          "platform": "android",
+          "steps": [
+            {
+              "do": "load_wake",
+              "filters": {
+                "services": [
+                  "0000180d-0000-1000-8000-00805f9b34fb"
+                ],
+                "names": [],
+                "mode": "low_power"
+              },
+              "out": []
+            },
+            {
+              "do": "adapter",
+              "state": "on",
+              "out": [
+                "emit adapter {\"state\":\"on\",\"epoch\":1}"
+              ]
+            },
+            {
+              "do": "wake_delivered",
+              "devices": [
+                {
+                  "id": "AA:BB:CC:DD:EE:01",
+                  "name": "Band",
+                  "rssi": -60,
+                  "services": [
+                    "0000180d-0000-1000-8000-00805f9b34fb"
+                  ]
+                }
+              ],
+              "out": [
+                "emit wake {\"state\":\"results\",\"devices\":[{\"id\":\"AA:BB:CC:DD:EE:01\",\"name\":\"Band\",\"rssi\":-60,\"services\":[\"0000180d-0000-1000-8000-00805f9b34fb\"]}]}"
+              ]
+            },
+            {
+              "do": "wake_start",
+              "call": 1,
+              "names": "Band",
+              "out": [
+                "reply 1 error busy"
+              ]
+            },
+            {
+              "do": "wake_delivered",
+              "error": 2,
+              "out": [
+                "wake_stop",
+                "wake_save -",
+                "emit wake {\"state\":\"failed\",\"error\":2}"
+              ]
+            },
+            {
+              "do": "port",
+              "refuse": {
+                "wake_start": "scan_failed the wake scan could not start (error 2)"
+              },
+              "out": []
+            },
+            {
+              "do": "wake_start",
+              "call": 2,
+              "names": "Band",
+              "out": [
+                "wake_start {\"services\":[],\"names\":[\"Band\"],\"mode\":\"low_power\"} low_power",
+                "reply 2 error scan_failed"
+              ]
+            },
+            {
+              "do": "wake_start",
+              "call": 3,
+              "names": "Band",
+              "out": [
+                "wake_start {\"services\":[],\"names\":[\"Band\"],\"mode\":\"low_power\"} low_power",
+                "wake_save {\"services\":[],\"names\":[\"Band\"],\"mode\":\"low_power\"}",
+                "emit wake {\"state\":\"started\",\"filters\":{\"services\":[],\"names\":[\"Band\"],\"mode\":\"low_power\"}}",
+                "reply 3 ok {\"state\":\"started\",\"filters\":{\"services\":[],\"names\":[\"Band\"],\"mode\":\"low_power\"}}"
+              ]
+            }
+          ]
+        },
+        {
+          "name": "restoration_companion_associate_presence_android",
+          "platform": "android",
+          "steps": [
+            {
+              "do": "associate",
+              "call": 1,
+              "params": {
+                "services": "180d,180f"
+              },
+              "out": [
+                "reply 1 error bad_value"
+              ]
+            },
+            {
+              "do": "associate",
+              "call": 2,
+              "params": {
+                "address": "aa:bb:cc:dd:ee:ff"
+              },
+              "out": [
+                "reply 2 error bad_value"
+              ]
+            },
+            {
+              "do": "associate",
+              "call": 3,
+              "params": {
+                "services": "180d",
+                "name": "Band"
+              },
+              "out": [
+                "associate 1 {\"services\":[\"0000180d-0000-1000-8000-00805f9b34fb\"],\"name\":\"Band\",\"address\":null,\"single\":true}"
+              ]
+            },
+            {
+              "do": "associate",
+              "call": 4,
+              "params": {},
+              "out": [
+                "reply 4 error busy"
+              ]
+            },
+            {
+              "do": "associated",
+              "request": 1,
+              "info": {
+                "association": 7,
+                "address": "AA:BB:CC:DD:EE:01",
+                "name": "Band"
+              },
+              "out": [
+                "reply 3 ok {\"association\":7,\"address\":\"AA:BB:CC:DD:EE:01\",\"name\":\"Band\"}"
+              ]
+            },
+            {
+              "do": "associated",
+              "request": 1,
+              "info": {
+                "association": 7
+              },
+              "out": [
+                "stale associated 1"
+              ]
+            },
+            {
+              "do": "associations",
+              "call": 5,
+              "list": [
+                {
+                  "association": 7,
+                  "address": "AA:BB:CC:DD:EE:01",
+                  "name": "Band"
+                }
+              ],
+              "out": [
+                "associations",
+                "reply 5 ok {\"associations\":[{\"association\":7,\"address\":\"AA:BB:CC:DD:EE:01\",\"name\":\"Band\",\"observing\":false}]}"
+              ]
+            },
+            {
+              "do": "presence_start",
+              "call": 6,
+              "association": 0,
+              "out": [
+                "reply 6 error bad_value"
+              ]
+            },
+            {
+              "do": "presence_start",
+              "call": 7,
+              "association": 7,
+              "out": [
+                "presence true 7",
+                "reply 7 ok {\"association\":7,\"observing\":true}"
+              ]
+            },
+            {
+              "do": "associations",
+              "call": 8,
+              "out": [
+                "associations",
+                "reply 8 ok {\"associations\":[{\"association\":7,\"address\":\"AA:BB:CC:DD:EE:01\",\"name\":\"Band\",\"observing\":true}]}"
+              ]
+            },
+            {
+              "do": "presence_event",
+              "association": 7,
+              "address": "AA:BB:CC:DD:EE:01",
+              "event": "appeared",
+              "out": [
+                "emit presence {\"association\":7,\"address\":\"AA:BB:CC:DD:EE:01\",\"event\":\"appeared\"}"
+              ]
+            },
+            {
+              "do": "presence_stop",
+              "call": 9,
+              "association": 7,
+              "out": [
+                "presence false 7",
+                "reply 9 ok {\"association\":7,\"observing\":false,\"stopped\":true}"
+              ]
+            },
+            {
+              "do": "presence_stop",
+              "call": 10,
+              "association": 7,
+              "out": [
+                "reply 10 ok {\"association\":7,\"observing\":false,\"stopped\":false}"
+              ]
+            },
+            {
+              "do": "disassociate",
+              "call": 11,
+              "association": 7,
+              "out": [
+                "disassociate 7",
+                "reply 11 ok {\"association\":7,\"removed\":true}"
+              ]
+            },
+            {
+              "do": "associate",
+              "call": 12,
+              "params": {
+                "address": "AA:BB:CC:DD:EE:02",
+                "single": false
+              },
+              "out": [
+                "associate 2 {\"services\":[],\"name\":null,\"address\":\"AA:BB:CC:DD:EE:02\",\"single\":false}"
+              ]
+            },
+            {
+              "do": "associated",
+              "request": 2,
+              "code": "cancelled the device chooser was closed",
+              "out": [
+                "reply 12 error cancelled"
+              ]
+            },
+            {
+              "do": "port",
+              "refuse": {
+                "associations": "associate_failed the associations could not be read (SecurityException)"
+              },
+              "out": []
+            },
+            {
+              "do": "associations",
+              "call": 13,
+              "out": [
+                "associations",
+                "reply 13 error associate_failed"
+              ]
+            }
+          ]
+        },
+        {
+          "name": "restoration_presence_relaunch_android",
+          "platform": "android",
+          "steps": [
+            {
+              "do": "load_observing",
+              "list": [
+                7
+              ],
+              "out": []
+            },
+            {
+              "do": "observing",
+              "out": [
+                "observing [7]"
+              ]
+            },
+            {
+              "do": "presence_event",
+              "association": 9,
+              "address": null,
+              "event": "appeared",
+              "out": [
+                "emit presence {\"association\":9,\"address\":null,\"event\":\"appeared\"}"
+              ]
+            },
+            {
+              "do": "observing",
+              "out": [
+                "observing [7,9]"
+              ]
+            },
+            {
+              "do": "presence_stop",
+              "call": 1,
+              "association": 7,
+              "out": [
+                "presence false 7",
+                "reply 1 ok {\"association\":7,\"observing\":false,\"stopped\":true}"
+              ]
+            },
+            {
+              "do": "port",
+              "refuse": {
+                "presence": "not_associated association 5 is not this app's"
+              },
+              "out": []
+            },
+            {
+              "do": "presence_start",
+              "call": 2,
+              "association": 5,
+              "out": [
+                "presence true 5",
+                "reply 2 error not_associated"
+              ]
+            },
+            {
+              "do": "observing",
+              "out": [
+                "observing [9]"
+              ]
+            }
+          ]
+        },
+        {
+          "name": "restoration_ios_wake_presence_are_platform_limits_associate_unavailable",
+          "platform": "ios",
+          "steps": [
+            {
+              "do": "adapter",
+              "state": "on",
+              "out": [
+                "emit adapter {\"state\":\"on\",\"epoch\":1}"
+              ]
+            },
+            {
+              "do": "wake_start",
+              "call": 1,
+              "services": "180d",
+              "out": [
+                "reply 1 error platform_limit"
+              ]
+            },
+            {
+              "do": "wake_stop",
+              "call": 2,
+              "out": [
+                "reply 2 error platform_limit"
+              ]
+            },
+            {
+              "do": "presence_start",
+              "call": 3,
+              "association": 7,
+              "out": [
+                "reply 3 error platform_limit"
+              ]
+            },
+            {
+              "do": "presence_stop",
+              "call": 4,
+              "association": 7,
+              "out": [
+                "reply 4 error platform_limit"
+              ]
+            },
+            {
+              "do": "associate",
+              "call": 5,
+              "params": {
+                "services": "180d"
+              },
+              "out": [
+                "reply 5 error unavailable"
+              ]
+            },
+            {
+              "do": "associations",
+              "call": 6,
+              "out": [
+                "reply 6 error unavailable"
+              ]
+            },
+            {
+              "do": "disassociate",
+              "call": 7,
+              "association": 7,
+              "out": [
+                "reply 7 error unavailable"
+              ]
+            }
+          ]
+        }
+      ]
     }
   }
 }

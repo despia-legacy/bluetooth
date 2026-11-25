@@ -206,6 +206,37 @@ enum BleCoreTests {
         }
 
         func advertiseSetStop(_ set: Int) { out.append("advertise_set_stop \(set)") }
+
+        var assocList: [Any] = []
+
+        func wakeStart(_ filters: BleObj, _ mode: String) -> String? {
+            out.append("wake_start \(BleCore.json(filters)) \(mode)")
+            return take("wake_start")
+        }
+
+        func wakeStop() { out.append("wake_stop") }
+
+        func wakeSave(_ filters: BleObj?) { out.append("wake_save \(filters.map { BleCore.json($0) } ?? "-")") }
+
+        func associate(_ request: Int, _ params: BleObj) -> String? {
+            out.append("associate \(request) \(BleCore.json(params))")
+            return take("associate")
+        }
+
+        func associations() -> Any {
+            out.append("associations")
+            return take("associations") ?? assocList
+        }
+
+        func disassociate(_ association: Int) -> String? {
+            out.append("disassociate \(association)")
+            return take("disassociate")
+        }
+
+        func presence(_ start: Bool, _ association: Int) -> String? {
+            out.append("presence \(start) \(association)")
+            return take("presence")
+        }
     }
 
     // MARK: step driver
@@ -345,6 +376,24 @@ enum BleCoreTests {
             core.advertiseSetStarted(num(st, "epoch", 1), num(st, "set", 0), num(st, "tx_power", 0), str(st, "code"))
         case "advertise_set_stopped": core.advertiseSetStopped(num(st, "epoch", 1), num(st, "set", 0))
         case "advertise_set_stop": core.advertiseSetStop(call, num(st, "set", 0))
+        case "wake_start":
+            core.wakeStart(call, str(st, "services"), str(st, "names"), num(st, "manufacturer_id", -1),
+                           str(st, "manufacturer_hex"), str(st, "mode"))
+        case "wake_stop": core.wakeStop(call)
+        case "load_wake": core.loadWake((st["filters"] as? BleObj)?.copy())
+        case "wake_delivered":
+            core.wakeDelivered(((st["devices"] as? [Any]) ?? []).map { ($0 as! BleObj).copy() }, num(st, "error", 0))
+        case "associate": core.associate(call, (st["params"] as? BleObj)?.copy() ?? BleObj())
+        case "associated": core.associated(num(st, "request", 1), (st["info"] as? BleObj)?.copy(), str(st, "code"))
+        case "associations":
+            if let l = st["list"] as? [Any] { port.assocList = l.map { ($0 as? BleObj)?.copy() ?? $0 } }
+            core.associations(call)
+        case "disassociate": core.disassociate(call, num(st, "association", 0))
+        case "presence_start": core.presence(call, num(st, "association", 0), true)
+        case "presence_stop": core.presence(call, num(st, "association", 0), false)
+        case "presence_event": core.presenceEvent(num(st, "association", 0), str(st, "address"), str(st, "event")!)
+        case "load_observing": core.loadObserving(((st["list"] as? [Any]) ?? []).map { $0 as! Int })
+        case "observing": port.out.append("observing \(BleCore.json(core.observingList as [Any]))")
         default:
             if !extra(core, port, st, d) { preconditionFailure("unknown step \(d)") }
         }

@@ -146,7 +146,8 @@ final class BleExtension: NSObject, NativeExtension, @MainActor BlePort {
                                              "service_remove", "value_set", "advertise_stop", "centrals", "central_drop",
                                              "keep_alive", "priority", "phy", "bond", "bonds", "respond", "l2cap_unpublish",
                                              "l2cap_send", "l2cap_close", "l2cap_channels", "advertise_set_start",
-                                             "advertise_set_stop"]
+                                             "advertise_set_stop", "wake_start", "wake_stop", "associate", "associations",
+                                             "disassociate", "presence_start", "presence_stop"]
     private static let radioRoutes: Set<String> = ["scan_start", "connect", "discover", "read", "write", "subscribe",
                                                    "unsubscribe", "rssi", "mtu", "raw", "system_devices", "connection_events",
                                                    "l2cap_open"]
@@ -300,6 +301,19 @@ final class BleExtension: NSObject, NativeExtension, @MainActor BlePort {
             for k in p.keys.sorted() { raw[k] = p[k] }
             core.advertiseSetStart(c, raw)
         case "advertise_set_stop": core.advertiseSetStop(c, int("set", 0))
+        // Android restoration routes: the core answers platform_limit (wake, presence) or unavailable
+        // (associate family) on iOS; the iOS restoration is CBCentralManager state restoration.
+        case "wake_start":
+            core.wakeStart(c, str("services"), str("names"), int("manufacturer_id", -1), str("manufacturer_hex"), str("mode"))
+        case "wake_stop": core.wakeStop(c)
+        case "associate":
+            let raw = BleObj()
+            for k in p.keys.sorted() { raw[k] = p[k] }
+            core.associate(c, raw)
+        case "associations": core.associations(c)
+        case "disassociate": core.disassociate(c, int("association", 0))
+        case "presence_start": core.presence(c, int("association", 0), true)
+        case "presence_stop": core.presence(c, int("association", 0), false)
         default: reply(c, false, "not_registered", call.route, nil)
         }
     }

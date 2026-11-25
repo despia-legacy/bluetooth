@@ -261,6 +261,42 @@ public final class BleCoreTest {
         public void advertiseSetStop(int set) {
             out.add("advertise_set_stop " + set);
         }
+
+        List<Object> assocList = new ArrayList<>();
+
+        public String wakeStart(Map<String, Object> filters, String mode) {
+            out.add("wake_start " + BleCore.json(filters) + " " + mode);
+            return take("wake_start");
+        }
+
+        public void wakeStop() {
+            out.add("wake_stop");
+        }
+
+        public void wakeSave(Map<String, Object> filters) {
+            out.add("wake_save " + (filters == null ? "-" : BleCore.json(filters)));
+        }
+
+        public String associate(int request, Map<String, Object> params) {
+            out.add("associate " + request + " " + BleCore.json(params));
+            return take("associate");
+        }
+
+        public Object associations() {
+            out.add("associations");
+            String r = take("associations");
+            return r != null ? r : assocList;
+        }
+
+        public String disassociate(int association) {
+            out.add("disassociate " + association);
+            return take("disassociate");
+        }
+
+        public String presence(boolean start, int association) {
+            out.add("presence " + start + " " + association);
+            return take("presence");
+        }
     }
 
     // ---- step driver ------------------------------------------------------------------------------
@@ -564,9 +600,62 @@ public final class BleCoreTest {
             case "advertise_set_stop":
                 core.advertiseSetStop(call, num(st, "set", 0));
                 return;
+            case "wake_start":
+                core.wakeStart(call, str(st, "services"), str(st, "names"), num(st, "manufacturer_id", -1),
+                        str(st, "manufacturer_hex"), str(st, "mode"));
+                return;
+            case "wake_stop":
+                core.wakeStop(call);
+                return;
+            case "load_wake":
+                core.loadWake(map(st, "filters"));
+                return;
+            case "wake_delivered": {
+                List<Map<String, Object>> devs = new ArrayList<>();
+                Object dl = st.get("devices");
+                if (dl != null) for (Object o : (List<?>) dl) devs.add(castMap(o));
+                core.wakeDelivered(devs, num(st, "error", 0));
+                return;
+            }
+            case "associate":
+                core.associate(call, map(st, "params") == null ? new LinkedHashMap<>() : map(st, "params"));
+                return;
+            case "associated":
+                core.associated(num(st, "request", 1), map(st, "info"), str(st, "code"));
+                return;
+            case "associations":
+                if (st.containsKey("list")) port.assocList = new ArrayList<Object>((List<?>) st.get("list"));
+                core.associations(call);
+                return;
+            case "disassociate":
+                core.disassociate(call, num(st, "association", 0));
+                return;
+            case "presence_start":
+                core.presence(call, num(st, "association", 0), true);
+                return;
+            case "presence_stop":
+                core.presence(call, num(st, "association", 0), false);
+                return;
+            case "presence_event":
+                core.presenceEvent(num(st, "association", 0), str(st, "address"), str(st, "event"));
+                return;
+            case "load_observing": {
+                List<Integer> li = new ArrayList<>();
+                for (Object o : (List<?>) st.get("list")) li.add((Integer) o);
+                core.loadObserving(li);
+                return;
+            }
+            case "observing":
+                port.out.add("observing " + BleCore.json(new ArrayList<Object>(core.observingList())));
+                return;
             default:
                 throw new IllegalArgumentException("unknown step " + d);
         }
+    }
+
+    @SuppressWarnings("unchecked")
+    static Map<String, Object> castMap(Object o) {
+        return (Map<String, Object>) o;
     }
 
     @SuppressWarnings("unchecked")

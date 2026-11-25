@@ -1065,6 +1065,124 @@
           "variable": "bleAdvertiseSetStop",
           "callback": "onBleAdvertiseSetStop"
         }
+      },
+      {
+        "name": "wake_start",
+        "params": {
+          "services": {
+            "type": "string",
+            "max": 740
+          },
+          "names": {
+            "type": "string",
+            "max": 2600
+          },
+          "manufacturer_id": {
+            "type": "int",
+            "min": 0,
+            "max": 65535
+          },
+          "manufacturer_hex": {
+            "type": "string",
+            "max": 62
+          },
+          "mode": {
+            "type": "enum",
+            "values": [
+              "low_power",
+              "balanced",
+              "low_latency",
+              "opportunistic"
+            ]
+          }
+        },
+        "output": {
+          "variable": "bleWakeStart",
+          "callback": "onBleWakeStart"
+        }
+      },
+      {
+        "name": "wake_stop",
+        "params": {},
+        "output": {
+          "variable": "bleWakeStop",
+          "callback": "onBleWakeStop"
+        }
+      },
+      {
+        "name": "associate",
+        "params": {
+          "services": {
+            "type": "string",
+            "max": 36
+          },
+          "name": {
+            "type": "string",
+            "max": 248
+          },
+          "address": {
+            "type": "string",
+            "max": 17
+          },
+          "single": {
+            "type": "bool"
+          }
+        },
+        "timeout_ms": 25000,
+        "output": {
+          "variable": "bleAssociate",
+          "callback": "onBleAssociate"
+        }
+      },
+      {
+        "name": "associations",
+        "params": {},
+        "output": {
+          "variable": "bleAssociations",
+          "callback": "onBleAssociations"
+        }
+      },
+      {
+        "name": "disassociate",
+        "params": {
+          "association": {
+            "type": "int",
+            "min": 1,
+            "required": true
+          }
+        },
+        "output": {
+          "variable": "bleDisassociate",
+          "callback": "onBleDisassociate"
+        }
+      },
+      {
+        "name": "presence_start",
+        "params": {
+          "association": {
+            "type": "int",
+            "min": 1,
+            "required": true
+          }
+        },
+        "output": {
+          "variable": "blePresenceStart",
+          "callback": "onBlePresenceStart"
+        }
+      },
+      {
+        "name": "presence_stop",
+        "params": {
+          "association": {
+            "type": "int",
+            "min": 1,
+            "required": true
+          }
+        },
+        "output": {
+          "variable": "blePresenceStop",
+          "callback": "onBlePresenceStop"
+        }
       }
     ],
     "events": [
@@ -1157,6 +1275,16 @@
         "name": "advertising_set",
         "callback": "onBleAdvertisingSet",
         "scope": "document"
+      },
+      {
+        "name": "wake",
+        "callback": "onBleWake",
+        "scope": "app"
+      },
+      {
+        "name": "presence",
+        "callback": "onBlePresence",
+        "scope": "app"
       }
     ]
   },

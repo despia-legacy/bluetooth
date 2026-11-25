@@ -53,7 +53,7 @@ SWIFT_MUTATIONS = [
     ("N1", "        return n.1\n", "        return fallback\n", "restore_pending_connect_joined_resolves_with_the_platform_error"),
 ]
 LIMIT = "iOS has no API to request a connection priority or interval; the system and the peripheral set it"
-NEW_MUTATIONS = {  # rules added in this repo (sections "finish" and "answers"), guarded on both cores
+NEW_MUTATIONS = {  # rules added in this repo (sections "finish", "answers" and "restoration"), guarded on both cores
     "jvm": [
         ("F1", "if (!SCAN_OPTION_KEYS.contains(k)) {", "if (false) {", "finish_scan_filters_by_name_and_manufacturer_with_android_options"),
         ("F2", "if (!(n instanceof String) || !scanNames.contains(n)) return false;", "", "finish_scan_filters_by_name_and_manufacturer_with_android_options"),
@@ -69,6 +69,12 @@ NEW_MUTATIONS = {  # rules added in this repo (sections "finish" and "answers"),
         ("X2", "if (periodic && (legacy || connectable || scannable)) {", "if (false) {", "advertising_sets_rules_start_stop_and_adapter_android"),
         ("R1", "if ((l.auto || systemReconnect) && !", "if (l.auto && !", "reconnect_system_ios_new_gen_resubscribes_without_auto"),
         ("R2", "system ? \"system\" : \"auto\"", "\"auto\"", "reconnect_system_ios_new_gen_resubscribes_without_auto"),
+        ("W1", "if (services.isEmpty() && names.isEmpty() && manufacturerId < 0) {", "if (false) {", "restoration_wake_rules_start_deliver_stop_android"),
+        ("W2", 'if (!list.isEmpty()) record("wake"', 'if (false) record("wake"', "restoration_wake_relaunch_failure_and_refusal_android"),
+        ("W3", 'record("wake", obj("state", "failed", "error", error));', "", "restoration_wake_relaunch_failure_and_refusal_android"),
+        ("C1", "if (address != null && !(address instanceof String", "if (false && !(address instanceof String", "restoration_companion_associate_presence_android"),
+        ("P1", "fail(call, \"platform_limit\", PRESENCE_LIMIT);\n            return;", "fail(call, \"platform_limit\", PRESENCE_LIMIT);", "restoration_ios_wake_presence_are_platform_limits_associate_unavailable"),
+        ("P2", "if (association > 0) observing.add(association);", "", "restoration_presence_relaunch_android"),
     ],
     "swift": [
         ("F1", "for k in options.keys where !BleCore.scanOptionKeys.contains(k) {", "for k in options.keys where false {", "finish_scan_filters_by_name_and_manufacturer_with_android_options"),
@@ -87,6 +93,12 @@ NEW_MUTATIONS = {  # rules added in this repo (sections "finish" and "answers"),
         ("X3", 'fail(call, "platform_limit", BleCore.advSetLimit)\n            return\n', 'fail(call, "platform_limit", BleCore.advSetLimit)\n', "advertising_sets_ios_is_a_platform_limit"),
         ("R1", "if (l.auto || systemReconnect) && reason", "if l.auto && reason", "reconnect_system_ios_new_gen_resubscribes_without_auto"),
         ("R2", 'system ? "system" : "auto"', '"auto"', "reconnect_system_ios_new_gen_resubscribes_without_auto"),
+        ("W1", "if services.isEmpty && names.isEmpty && manufacturerId < 0 {", "if false {", "restoration_wake_rules_start_deliver_stop_android"),
+        ("W2", 'if !list.isEmpty { record("wake"', 'if false { record("wake"', "restoration_wake_relaunch_failure_and_refusal_android"),
+        ("W3", 'record("wake", BleCore.obj(("state", "failed"), ("error", error)))', "", "restoration_wake_relaunch_failure_and_refusal_android"),
+        ("C1", "if let a = address, !(a is NSNull) {", "if false, let a = address {", "restoration_companion_associate_presence_android"),
+        ("P1", 'fail(call, "platform_limit", BleCore.presenceLimit)\n            return\n', 'fail(call, "platform_limit", BleCore.presenceLimit)\n', "restoration_ios_wake_presence_are_platform_limits_associate_unavailable"),
+        ("P2", "if association > 0 && !observing.contains(association) { observing.append(association) }", "", "restoration_presence_relaunch_android"),
     ],
 }
 

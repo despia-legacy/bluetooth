@@ -66,6 +66,27 @@ protocol BlePort: AnyObject {
     /// Android: start advertising set `set` (the iOS core never asks). nil when accepted.
     func advertiseSetStart(_ epoch: Int, _ set: Int, _ params: BleObj) -> String?
     func advertiseSetStop(_ set: Int)
+
+    // Android restoration (kinds and answers as BleCore.java's Port; the iOS core never asks).
+    func wakeStart(_ filters: BleObj, _ mode: String) -> String?
+    func wakeStop()
+    func wakeSave(_ filters: BleObj?)
+    func associate(_ request: Int, _ params: BleObj) -> String?
+    /// The app's associations as records, or "code message".
+    func associations() -> Any
+    func disassociate(_ association: Int) -> String?
+    func presence(_ start: Bool, _ association: Int) -> String?
+}
+
+/// The iOS radio has no wake scan and no companion device manager: the core answers before asking.
+extension BlePort {
+    func wakeStart(_ filters: BleObj, _ mode: String) -> String? { "platform_limit \(BleCore.wakeLimit)" }
+    func wakeStop() {}
+    func wakeSave(_ filters: BleObj?) {}
+    func associate(_ request: Int, _ params: BleObj) -> String? { "unavailable \(BleCore.associateIOS)" }
+    func associations() -> Any { "unavailable \(BleCore.associateIOS)" }
+    func disassociate(_ association: Int) -> String? { "unavailable \(BleCore.associateIOS)" }
+    func presence(_ start: Bool, _ association: Int) -> String? { "platform_limit \(BleCore.presenceLimit)" }
 }
 
 /// A JSON object that keeps insertion order (the canonical vector form, shared with the Java twin).
@@ -2766,6 +2787,228 @@ final class BleCore {
     }
 
     private var setsOn: Int { sets.filter { $0.on }.count }
+
+    // MARK: Android restoration: wake scan and companion device presence
+
+    static let wakeLimit = "iOS has no scan that outlives the app: a scan_start with services continues in the "
+        + "background and is restored after a relaunch (CBCentralManager state restoration)"
+    static let presenceLimit = "iOS has no API to observe a device's presence; a connect with no time limit "
+        + "completes when the device comes in range, and state restoration relaunches the app for it"
+    static let associateIOS = "CompanionDeviceManager is Android's; this extension does not pair through "
+        + "iOS AccessorySetupKit"
+
+    /// The running wake scan's filters (kept on disk by the port), or nil.
+    private(set) var wake: BleObj?
+    private var associateCall = -1
+    private var nextAssociate = 0
+    private var assocRequest = 0
+    private var observing: [Int] = []
+
+    /// Launch: the wake scan a previous process started is still the system's.
+    func loadWake(_ filters: BleObj?) { wake = filters }
+
+    var waking: Bool { wake != nil }
+
+    /// Launch: the presence observations a previous process started stay the system's.
+    func loadObserving(_ list: [Int]) { observing = list }
+
+    var observingList: [Int] { observing }
+
+    func wakeStart(_ call: Int, _ servicesCsv: String?, _ namesCsv: String?, _ manufacturerId: Int, _ manufacturerHex: String?,
+                   _ mode: String?) {
+        if !android {
+            fail(call, "platform_limit", BleCore.wakeLimit)
+            return
+        }
+        guard let services = BleCore.uuidList(servicesCsv) else {
+            fail(call, "bad_value", "services must be up to 20 UUIDs")
+            return
+        }
+        guard let names = BleCore.nameList(namesCsv) else {
+            fail(call, "bad_value", "names must be up to 10 comma-separated names of 1 to 248 bytes")
+            return
+        }
+        let prefix = manufacturerHex.flatMap { BleCore.fromHex($0) }
+        if manufacturerId > 0xFFFF || (manufacturerHex != nil && (prefix == nil || manufacturerId < 0)) {
+            fail(call, "bad_value", "manufacturer_id is 0 to 65535; manufacturer_hex is hex bytes and needs manufacturer_id")
+            return
+        }
+        if services.isEmpty && names.isEmpty && manufacturerId < 0 {
+            fail(call, "filter_required", "a wake scan needs a service, name or manufacturer filter")
+            return
+        }
+        if !on {
+            fail(call, "unavailable", "Bluetooth is \(adapterState)")
+            return
+        }
+        if wake != nil {
+            fail(call, "busy", "a wake scan is already running; wake_stop ends it")
+            return
+        }
+        let f = BleCore.obj(("services", services as [Any]), ("names", names as [Any]))
+        if manufacturerId >= 0 {
+            f["manufacturer_id"] = manufacturerId
+            f["manufacturer_hex"] = BleCore.hex(prefix ?? [])
+        }
+        let m = mode ?? "low_power"
+        f["mode"] = m
+        if let err = port.wakeStart(f, m) {
+            refused(call, err)
+            return
+        }
+        wake = f
+        port.wakeSave(f)
+        record("wake", BleCore.obj(("state", "started"), ("filters", f)))
+        ok(call, BleCore.obj(("state", "started"), ("filters", f)))
+    }
+
+    func wakeStop(_ call: Int) {
+        if !android {
+            fail(call, "platform_limit", BleCore.wakeLimit)
+            return
+        }
+        if wake == nil {
+            ok(call, BleCore.obj(("state", "stopped"), ("stopped", false)))
+            return
+        }
+        port.wakeStop()
+        wake = nil
+        port.wakeSave(nil)
+        record("wake", BleCore.obj(("state", "stopped"), ("reason", "requested")))
+        ok(call, BleCore.obj(("state", "stopped"), ("stopped", true)))
+    }
+
+    /// The system delivered the wake scan's PendingIntent: devices, or a SCAN_FAILED code that ends the scan.
+    func wakeDelivered(_ devices: [BleObj], _ error: Int) {
+        if wake == nil {
+            stale("wake delivery")
+            return
+        }
+        if error > 0 {
+            port.wakeStop()
+            wake = nil
+            port.wakeSave(nil)
+            record("wake", BleCore.obj(("state", "failed"), ("error", error)))
+            return
+        }
+        let list = Array(devices.prefix(BleCore.devicesMax))
+        if !list.isEmpty { record("wake", BleCore.obj(("state", "results"), ("devices", list as [Any]))) }
+    }
+
+    func associate(_ call: Int, _ raw: BleObj) {
+        if !android {
+            fail(call, "unavailable", BleCore.associateIOS)
+            return
+        }
+        guard let services = BleCore.uuidList(raw["services"] as? String), services.count <= 1 else {
+            fail(call, "bad_value", "services is one service UUID")
+            return
+        }
+        let address = raw["address"]
+        if let a = address, !(a is NSNull) {
+            guard let s = a as? String, s.range(of: "^[0-9A-F]{2}(:[0-9A-F]{2}){5}$", options: .regularExpression) != nil else {
+                fail(call, "bad_value", "address is a Bluetooth address like 00:11:22:AA:BB:CC")
+                return
+            }
+        }
+        if associateCall >= 0 && port.isActive(associateCall) {
+            fail(call, "busy", "the device chooser is already open")
+            return
+        }
+        let p = BleCore.obj(("services", services as [Any]), ("name", BleCore.nul(raw["name"])), ("address", BleCore.nul(address)),
+                            ("single", (raw["single"] as? Bool) != false))
+        nextAssociate += 1
+        let r = nextAssociate
+        if let err = port.associate(r, p) {
+            refused(call, err)
+            return
+        }
+        associateCall = call
+        assocRequest = r
+    }
+
+    func associated(_ r: Int, _ info: BleObj?, _ err: String?) {
+        if r != assocRequest || associateCall < 0 {
+            stale("associated \(r)")
+            return
+        }
+        let call = associateCall
+        associateCall = -1
+        if let err = err {
+            refused(call, err)
+            return
+        }
+        ok(call, info ?? BleObj())
+    }
+
+    func associations(_ call: Int) {
+        if !android {
+            fail(call, "unavailable", BleCore.associateIOS)
+            return
+        }
+        let r = port.associations()
+        if let err = r as? String {
+            refused(call, err)
+            return
+        }
+        var list: [Any] = []
+        for case let o as BleObj in (r as? [Any]) ?? [] {
+            let m = BleObj()
+            for k in o.keys { m[k] = o[k] }
+            m["observing"] = (o["association"] as? Int).map { observing.contains($0) } ?? false
+            list.append(m)
+        }
+        ok(call, BleCore.obj(("associations", list)))
+    }
+
+    func disassociate(_ call: Int, _ association: Int) {
+        if !android {
+            fail(call, "unavailable", BleCore.associateIOS)
+            return
+        }
+        if association <= 0 {
+            fail(call, "bad_value", "association is the id associate or associations gave")
+            return
+        }
+        if let err = port.disassociate(association) {
+            refused(call, err)
+            return
+        }
+        observing.removeAll { $0 == association }
+        ok(call, BleCore.obj(("association", association), ("removed", true)))
+    }
+
+    func presence(_ call: Int, _ association: Int, _ start: Bool) {
+        if !android {
+            fail(call, "platform_limit", BleCore.presenceLimit)
+            return
+        }
+        if association <= 0 {
+            fail(call, "bad_value", "association is the id associate or associations gave")
+            return
+        }
+        if !start && !observing.contains(association) {
+            ok(call, BleCore.obj(("association", association), ("observing", false), ("stopped", false)))
+            return
+        }
+        if let err = port.presence(start, association) {
+            refused(call, err)
+            return
+        }
+        if start {
+            if !observing.contains(association) { observing.append(association) }
+        } else {
+            observing.removeAll { $0 == association }
+        }
+        ok(call, start ? BleCore.obj(("association", association), ("observing", true))
+            : BleCore.obj(("association", association), ("observing", false), ("stopped", true)))
+    }
+
+    /// The system reported a presence change of an associated device.
+    func presenceEvent(_ association: Int, _ address: String?, _ event: String) {
+        if association > 0 && !observing.contains(association) { observing.append(association) }
+        record("presence", BleCore.obj(("association", association), ("address", BleCore.nul(address)), ("event", event)))
+    }
 
     // MARK: adapter changes of the server
 
