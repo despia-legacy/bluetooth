@@ -162,5 +162,33 @@
  {
   "cmd": "extension://ble/advertise_set_stop?set=1",
   "var": "bleAdvertiseSetStop"
+ },
+ {
+  "cmd": "extension://ble/wake_start?services=180d",
+  "var": "bleWakeStart"
+ },
+ {
+  "cmd": "extension://ble/wake_stop",
+  "var": "bleWakeStop"
+ },
+ {
+  "cmd": "extension://ble/associations",
+  "var": "bleAssociations"
+ },
+ {
+  "cmd": "extension://ble/presence_start?association=1",
+  "var": "blePresenceStart"
+ },
+ {
+  "cmd": "extension://ble/presence_stop?association=1",
+  "var": "blePresenceStop"
+ },
+ {
+  "cmd": "extension://ble/disassociate?association=1",
+  "var": "bleDisassociate"
+ },
+ {
+  "cmd": "extension://ble/associate?services=180d",
+  "var": "bleAssociate"
  }
 ]

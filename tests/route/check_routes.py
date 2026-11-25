@@ -8,7 +8,8 @@ STANDARD = {"bad_request", "not_registered", "forbidden_frame", "forbidden_origi
             "unavailable", "platform_limit", "handler_error"}
 EXT = {"busy", "unavailable", "permission_denied", "scan_failed", "bad_value", "unknown_device", "not_connected",
        "not_found", "not_permitted", "too_long", "connect_failed", "connect_timeout", "gatt_error", "link_lost",
-       "filter_required", "advertise_failed", "no_subscribers", "platform_limit", "l2cap_failed"}
+       "filter_required", "advertise_failed", "no_subscribers", "platform_limit", "l2cap_failed", "associate_failed",
+       "cancelled", "not_associated", "presence_failed"}
 answers = {}
 for line in open(res_path):
     row = json.loads(line)
@@ -57,6 +58,11 @@ for i, c in enumerate(plan):
             problems.append("iOS bond routes must answer platform_limit")
         if platform == "ios" and route == "advertise_set_start" and a.get("code") != "platform_limit":
             problems.append("iOS advertising sets must answer platform_limit")
+        if platform == "ios" and route in ("wake_start", "wake_stop", "presence_start", "presence_stop") \
+                and a.get("code") != "platform_limit":
+            problems.append("iOS wake scans and presence must answer platform_limit")
+        if platform == "ios" and route in ("associate", "associations", "disassociate") and a.get("code") != "unavailable":
+            problems.append("iOS companion association must answer unavailable")
     if problems:
         fails += 1
     summary = "-" if not isinstance(a, dict) else ("ok " + json.dumps(a.get("data"))[:90] if a.get("ok")
