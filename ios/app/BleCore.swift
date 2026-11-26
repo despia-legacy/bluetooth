@@ -3168,6 +3168,28 @@ final class BleCore {
         port.timer("persist", 0, BleCore.persistMs)
     }
 
+    /// iOS only. One entry of NSAccessorySetupBluetoothCompanyIdentifiers as Apple writes it: "Each identifier is a
+    /// two-byte UUID that represents a company identifier as registered on the Bluetooth SIG's assigned numbers"
+    /// (developer.apple.com/documentation/bundleresources/information-property-list/nsaccessorysetupbluetoothcompanyidentifiers,
+    /// read 2026-11-26), so exactly four hex digits ("004C", the 16-bit UUID form of NSAccessorySetupBluetoothServices'
+    /// "180D"). Any other spelling, `0x004C` included, is not declared: nil, so the guard that keeps the picker from
+    /// crashing never passes a string the system might not match.
+    static func companyIdentifier(_ entry: String) -> Int? {
+        guard entry.utf8.count == 4, entry.utf8.allSatisfy({ ($0 >= 0x30 && $0 <= 0x39) || ($0 >= 0x41 && $0 <= 0x46) || ($0 >= 0x61 && $0 <= 0x66) }) else {
+            return nil
+        }
+        return Int(entry, radix: 16)
+    }
+
+    /// iOS only. Whether launch recreates the central manager (so willRestoreState has a manager to reach): the page
+    /// armed it with an earlier call and Bluetooth is already allowed, and, when the app declares AccessorySetupKit,
+    /// only once a migration has completed. Apple: "Don't initialize a CBCentralManager before migration is complete."
+    /// A launch that created the manager first would make every `migrate` answer `unavailable` for an app that used
+    /// Bluetooth before (the apps that have devices to migrate); the page's own call creates it, after `migrate`.
+    static func launchCreatesCentral(armed: Bool, authorized: Bool, accessorySetupDeclared: Bool, migrationDone: Bool) -> Bool {
+        armed && authorized && (!accessorySetupDeclared || migrationDone)
+    }
+
     /// iOS only. What launch does with ble-server.json once the peripheral manager settled:
     /// absent, none; unreadable, move it aside (never overwritten); readable and iOS restored the
     /// server, keep it; readable and no restore call came, an ordinary launch: delete it.

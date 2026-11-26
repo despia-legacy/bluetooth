@@ -471,6 +471,30 @@ enum BleCoreTests {
             }
         }
         serverFile()
+        accessorySetupInfoPlist()
+    }
+
+    /// iOS only (an Info.plist and a launch order do not exist on Android): the company identifier strings of
+    /// NSAccessorySetupBluetoothCompanyIdentifiers in Apple's documented form ("a two-byte UUID": four hex digits,
+    /// "004C"; `0x004C` and other lengths are not declared), and the launch rule that keeps `migrate` reachable
+    /// (no central manager at launch for an app that declares AccessorySetupKit before an accessory was set up).
+    static func accessorySetupInfoPlist() {
+        var bad: [String] = []
+        for (entry, want) in [("004C", 0x004C), ("004c", 0x004C), ("0AD2", 0x0AD2), ("FFFF", 0xFFFF), ("0000", 0),
+                              ("0x004C", -1), ("0X004C", -1), ("4C", -1), ("004", -1), ("00004C", -1), ("0x4C", -1),
+                              ("", -1), (" 004C", -1), ("004C ", -1), ("004G", -1), ("76", -1), ("00\u{FF14}C", -1)] {
+            let got = BleCore.companyIdentifier(entry) ?? -1
+            if got != want { bad.append("companyIdentifier(\"\(entry)\"): got \(got) want \(want)") }
+        }
+        // (armed, authorized, declared, migrated) -> creates the central at launch
+        for (a, u, d, m, want) in [(true, true, false, false, true), (true, true, false, true, true), (true, true, true, true, true),
+                                   (true, true, true, false, false), (false, true, false, false, false),
+                                   (true, false, false, false, false), (true, false, true, true, false),
+                                   (false, true, true, true, false)] {
+            let got = BleCore.launchCreatesCentral(armed: a, authorized: u, accessorySetupDeclared: d, migrationDone: m)
+            if got != want { bad.append("launchCreatesCentral(armed \(a), authorized \(u), declared \(d), migrated \(m)): got \(got) want \(want)") }
+        }
+        report("BL-P16", "accessory_setup_plist_company_identifier_and_launch_central_ios", bad.isEmpty, bad.joined(separator: "; "))
     }
 
     /// BL-P12, iOS only (Android has no state restoration, so the shared table has no rows for it):

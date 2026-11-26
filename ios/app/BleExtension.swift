@@ -138,11 +138,16 @@ final class BleExtension: NSObject, NativeExtension, @MainActor BlePort {
     /// central with its restore identifier when the page used it before and that cannot prompt;
     /// willRestoreState then hands back what iOS kept, and with nothing kept the manager only reports
     /// its state. Without the page's earlier call nothing is created at launch (owner items 857-858:
-    /// nothing starts without the page's call), and the manager never carries the power alert.
+    /// nothing starts without the page's call), and the manager never carries the power alert. An app that
+    /// declares AccessorySetupKit gets no manager at launch until an accessory was set up through it
+    /// (BleCore.launchCreatesCentral): Apple fails the migration picker once a manager exists, and the apps
+    /// that used Bluetooth before are the ones with devices to migrate; their page's call creates it.
     func restoreBluetoothCentrals(_ identifiers: [String]) {
         guard identifiers.contains(ctx.bluetoothRestoreIdentifier("main")),
-              FileManager.default.fileExists(atPath: armedFile.path),
-              CBManager.authorization == .allowedAlways else { return }
+              BleCore.launchCreatesCentral(armed: FileManager.default.fileExists(atPath: armedFile.path),
+                                           authorized: CBManager.authorization == .allowedAlways,
+                                           accessorySetupDeclared: BleAccessories.declared,
+                                           migrationDone: accessories.migrationDone) else { return }
         _ = radio.makeManager()
     }
 

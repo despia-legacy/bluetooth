@@ -105,6 +105,13 @@ NEW_MUTATIONS = {  # rules added in this repo (sections "finish", "answers" and 
         ("P2", "if association > 0 && !observing.contains(association) { observing.append(association) }", "", "restoration_presence_relaunch_android"),
         ("I1", 'if let a = raw["address"], !(a is NSNull) {\n                fail(call, "bad_value", BleCore.associateIOSAddress)', 'if false {\n                fail(call, "bad_value", BleCore.associateIOSAddress)', "restoration_ios_wake_presence_are_platform_limits_associate_is_accessory_setup_kit"),
         ("I2", 'if services.isEmpty && manufacturerId < 0 {\n                fail(call, "bad_value", "services is one service UUID or manufacturer_id is a company identifier: the iOS', 'if false {\n                fail(call, "bad_value", "services is one service UUID or manufacturer_id is a company identifier: the iOS', "associate_company_identifier_migration_and_failures_ios"),
+        ("CI1", "        guard entry.utf8.count == 4, entry.utf8.allSatisfy(",
+         "        let entry = entry.hasPrefix(\"0x\") ? String(entry.dropFirst(2)) : entry\n        guard entry.utf8.count == 4, entry.utf8.allSatisfy(",
+         "accessory_setup_plist_company_identifier_and_launch_central_ios"),
+        ("CI2", "        guard entry.utf8.count == 4, entry.utf8.allSatisfy(", "        guard entry.utf8.count >= 3, entry.utf8.allSatisfy(",
+         "accessory_setup_plist_company_identifier_and_launch_central_ios"),
+        ("LC1", "        armed && authorized && (!accessorySetupDeclared || migrationDone)", "        armed && authorized",
+         "accessory_setup_plist_company_identifier_and_launch_central_ios"),
     ],
 }
 

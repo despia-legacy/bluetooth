@@ -38,12 +38,15 @@ final class BleAccessories {
     static let below18 = "AccessorySetupKit needs iOS 18; earlier iOS has no accessory picker for an app"
     static let notDeclared = "the app does not declare AccessorySetupKit: add Bluetooth to NSAccessorySetupKitSupports and the "
         + "accessory's service to NSAccessorySetupBluetoothServices (or its company identifier to "
-        + "NSAccessorySetupBluetoothCompanyIdentifiers, like 0x004C), and its name to NSAccessorySetupBluetoothNames, in the app's "
+        + "NSAccessorySetupBluetoothCompanyIdentifiers, four hex digits like 004C), and its name to NSAccessorySetupBluetoothNames, in the app's "
         + "Info.plist; declaring it limits CoreBluetooth to the accessories the person set up"
     static let migrationAfterCentral = "migrate needs a run in which no CBCentralManager exists yet: Apple fails the picker when one "
         + "was created before the migration is complete. Call associate with migrate before any other ble route in that run"
 
     private let file: URL
+    /// Written once an accessory was set up through AccessorySetupKit (a migration completed, or a picked
+    /// accessory was added): from then on a launch may recreate the central manager (BleCore.launchCreatesCentral).
+    private let migratedFile: URL
     private let log: (String) -> Void
     /// The picker's end: request, the accessory as a record, or "code message". Set by `BleExtension`.
     var answer: ((Int, BleObj?, String?) -> Void)?
@@ -52,9 +55,12 @@ final class BleAccessories {
     /// The open picker's request, or 0.
     private var open = 0
     private var session: AnyObject?
+    /// The open picker's migration: the device id (upper-case UUID) and the display name it carries.
+    private var migrating: (id: String, name: String)?
 
     init(dataDirectory: URL, log: @escaping (String) -> Void) {
         file = dataDirectory.appendingPathComponent("ble", isDirectory: true).appendingPathComponent("accessories.json")
+        migratedFile = dataDirectory.appendingPathComponent("ble", isDirectory: true).appendingPathComponent("migrated")
         self.log = log
         if let d = try? Data(contentsOf: file),
            let o = try? JSONSerialization.jsonObject(with: d) as? [String: Any] {
@@ -72,17 +78,11 @@ final class BleAccessories {
     /// The app declared Bluetooth in NSAccessorySetupKitSupports.
     static var declared: Bool { plistList("NSAccessorySetupKitSupports").contains("Bluetooth") }
 
-    /// NSAccessorySetupBluetoothCompanyIdentifiers: an array of strings (Apple does not give their form; this
-    /// extension reads the Bluetooth SIG's `0x004C`, and ignores any other spelling, so an id written another
-    /// way answers `unavailable` instead of crashing the picker).
+    /// NSAccessorySetupBluetoothCompanyIdentifiers: an array of strings, each "a two-byte UUID" (Apple, read
+    /// 2026-11-26): four hex digits like `004C`. Any other spelling (`0x004C` included) is not declared, so a call that
+    /// names such an id answers `unavailable` instead of crashing the picker (BleCore.companyIdentifier).
     static var companyIdentifiers: Set<Int> {
-        var out = Set<Int>()
-        for s in plistList("NSAccessorySetupBluetoothCompanyIdentifiers") {
-            let t = s.trimmingCharacters(in: .whitespaces)
-            guard t.lowercased().hasPrefix("0x"), let v = Int(t.dropFirst(2), radix: 16), v >= 0, v <= 0xFFFF else { continue }
-            out.insert(v)
-        }
-        return out
+        Set(plistList("NSAccessorySetupBluetoothCompanyIdentifiers").compactMap(BleCore.companyIdentifier))
     }
 
     /// CBUUID(string:) raises on a malformed string; only these forms reach it.
@@ -90,6 +90,15 @@ final class BleAccessories {
         let hex = "[0-9A-Fa-f]"
         let ok = s.range(of: "^(\(hex){4}|\(hex){8}|\(hex){8}-\(hex){4}-\(hex){4}-\(hex){4}-\(hex){12})$", options: .regularExpression) != nil
         return ok ? CBUUID(string: s).uuidString : nil
+    }
+
+    /// An accessory has been set up through AccessorySetupKit in this install (see `migratedFile`).
+    var migrationDone: Bool { FileManager.default.fileExists(atPath: migratedFile.path) }
+
+    private func markMigrationDone() {
+        guard !migrationDone else { return }
+        FileManager.default.createFile(atPath: migratedFile.path, contents: Data(),
+                                       attributes: [.protectionKey: FileProtectionType.completeUntilFirstUserAuthentication])
     }
 
     // MARK: session
@@ -160,7 +169,18 @@ final class BleAccessories {
     private func handle(_ event: ASAccessoryEvent) {
         switch event.eventType {
         case .accessoryAdded:
+            markMigrationDone()
             if let a = event.accessory, let info = record(a) { finish(info, nil) }
+        case .migrationComplete:
+            // Apple lists this apart from accessoryAdded: "The migration of an accessory completed". It answers the
+            // request that carried the migration item, with the accessory when the event has one, else the device
+            // the call named. Never `cancelled`: pickerDidDismiss follows it, and `closed()` finds no open request.
+            markMigrationDone()
+            if let a = event.accessory, let info = record(a) {
+                finish(info, nil)
+            } else if let m = migrating, open > 0 {
+                finish(BleCore.obj(("association", number(for: m.id)), ("address", NSNull()), ("name", m.name), ("id", m.id)), nil)
+            }
         case .pickerDidDismiss:
             closed()
         case .pickerSetupFailed:
@@ -195,7 +215,7 @@ final class BleAccessories {
         }
         if let id = p["manufacturerId"] as? Int {
             guard id >= 0, id <= 0xFFFF, BleAccessories.companyIdentifiers.contains(id) else {
-                return "unavailable company identifier \(String(format: "0x%04X", id)) is not in NSAccessorySetupBluetoothCompanyIdentifiers; \(BleAccessories.notDeclared)"
+                return "unavailable company identifier \(String(format: "%04X", id)) is not in NSAccessorySetupBluetoothCompanyIdentifiers; \(BleAccessories.notDeclared)"
             }
             descriptor.bluetoothCompanyIdentifier = ASBluetoothCompanyIdentifier(rawValue: UInt16(id))
             if let hex = p["manufacturerHex"] as? String, let bytes = BleCore.fromHex(hex), !bytes.isEmpty {
@@ -222,8 +242,10 @@ final class BleAccessories {
             let m = ASMigrationDisplayItem(name: title, productImage: image, descriptor: descriptor)
             m.peripheralIdentifier = device
             item = m
+            migrating = (device.uuidString, title)
         } else {
             item = ASPickerDisplayItem(name: title, productImage: image, descriptor: descriptor)
+            migrating = nil
         }
         open = request
         asSession?.showPicker(for: [item]) { [weak self] error in
