@@ -428,7 +428,12 @@ final class BleExtension: NSObject, NativeExtension, @MainActor BlePort {
 
     // MARK: BlePort: accessory setup (AccessorySetupKit)
 
-    func associate(_ request: Int, _ params: BleObj) -> String? { accessories.associate(request, params) }
+    func associate(_ request: Int, _ params: BleObj) -> String? {
+        if let m = params["migrate"], !(m is NSNull), radio.hasManager {
+            return "unavailable \(BleAccessories.migrationAfterCentral)"
+        }
+        return accessories.associate(request, params)
+    }
     func associations() -> Any { accessories.associations() }
     func disassociate(_ association: Int) -> String? { accessories.disassociate(association) }
 

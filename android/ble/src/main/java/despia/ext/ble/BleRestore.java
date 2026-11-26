@@ -307,6 +307,14 @@ final class BleRestore {
         if (!services.isEmpty()) sf.setServiceUuid(ParcelUuid.fromString(services.get(0)));
         if (p.get("name") instanceof String) sf.setDeviceName((String) p.get("name"));
         if (p.get("address") instanceof String) sf.setDeviceAddress((String) p.get("address"));
+        // The manufacturer filter of scan_start: the company identifier, and the bytes the data starts with (a prefix
+        // is a masked match: ScanFilter.Builder.setManufacturerData(id, data, mask), mask 0xFF over the given bytes).
+        if (p.get("manufacturerId") instanceof Number) {
+            byte[] prefix = p.get("manufacturerHex") instanceof String ? BleCore.fromHex((String) p.get("manufacturerHex")) : new byte[0];
+            byte[] mask = new byte[prefix.length];
+            java.util.Arrays.fill(mask, (byte) 0xFF);
+            sf.setManufacturerData(((Number) p.get("manufacturerId")).intValue(), prefix, mask);
+        }
         AssociationRequest req = new AssociationRequest.Builder()
                 .addDeviceFilter(new BluetoothLeDeviceFilter.Builder().setScanFilter(sf.build()).build())
                 .setSingleDevice(Boolean.TRUE.equals(p.get("single")))

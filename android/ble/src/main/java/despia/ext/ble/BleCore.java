@@ -2982,6 +2982,10 @@ public final class BleCore {
             + "background and is restored after a relaunch (CBCentralManager state restoration)";
     static final String PRESENCE_LIMIT = "iOS has no API to observe a device's presence; a connect with no time limit "
             + "completes when the device comes in range, and state restoration relaunches the app for it";
+    static final String MIGRATE_ANDROID = "migrate is AccessorySetupKit's migration of a device the app already uses; Android has no such step, "
+            + "a device the app already connects to needs none";
+    static final String ASSOCIATE_COMPANY_NEEDS_MORE = "a filter by manufacturer_id alone is not enough for the iOS accessory picker: add name or "
+            + "manufacturer_hex (Apple, Discovering and configuring accessories)";
     static final String ASSOCIATE_IOS_ADDRESS = "iOS gives an app no Bluetooth address (AccessorySetupKit answers a "
             + "Bluetooth identifier); filter by services and name";
 
@@ -3107,11 +3111,43 @@ public final class BleCore {
             fail(call, "bad_value", "services is one service UUID");
             return;
         }
+        // The manufacturer filter, as on scan_start and wake_start: an id (a Bluetooth company identifier), and
+        // optionally hex bytes the advertised manufacturer data starts with.
+        int manufacturerId = -1;
+        if (raw.get("manufacturer_id") != null) {
+            manufacturerId = raw.get("manufacturer_id") instanceof Number ? ((Number) raw.get("manufacturer_id")).intValue() : -2;
+        }
+        String manufacturerHex = raw.get("manufacturer_hex") instanceof String ? (String) raw.get("manufacturer_hex") : null;
+        byte[] prefix = manufacturerHex == null ? null : fromHex(manufacturerHex);
+        if (manufacturerId < -1 || manufacturerId > 0xFFFF || (manufacturerHex != null && (prefix == null || manufacturerId < 0))) {
+            fail(call, "bad_value", "manufacturer_id is 0 to 65535; manufacturer_hex is hex bytes and needs manufacturer_id");
+            return;
+        }
+        Object name = raw.get("name");
+        String migrate = null;
+        if (raw.get("migrate") != null) {
+            if (android) {
+                fail(call, "platform_limit", MIGRATE_ANDROID);
+                return;
+            }
+            Object m = raw.get("migrate");
+            if (!(m instanceof String) || !((String) m).matches("[0-9A-Fa-f]{8}(-[0-9A-Fa-f]{4}){3}-[0-9A-Fa-f]{12}")) {
+                fail(call, "bad_value", "migrate is the id of a device the app already uses, a UUID");
+                return;
+            }
+            migrate = ((String) m).toUpperCase(java.util.Locale.ROOT);
+        }
         // AccessorySetupKit filters by a service UUID or a company identifier (Apple, ASDiscoveryDescriptor:
-        // "Provide at least one UUID or manufacturer ID to filter"), and its accessory has no address.
+        // "Provide at least one UUID or manufacturer ID to filter"), and its accessory has no address. Apple's
+        // "Discovering and configuring accessories": a descriptor with a company identifier needs one more
+        // accessory identifier (a name, or manufacturer data), or the app crashes.
         if (!android) {
-            if (services.isEmpty()) {
-                fail(call, "bad_value", "services is one service UUID: the iOS accessory picker filters by it");
+            if (services.isEmpty() && manufacturerId < 0) {
+                fail(call, "bad_value", "services is one service UUID or manufacturer_id is a company identifier: the iOS accessory picker filters by one of them");
+                return;
+            }
+            if (services.isEmpty() && prefix == null && (!(name instanceof String) || ((String) name).isEmpty())) {
+                fail(call, "bad_value", ASSOCIATE_COMPANY_NEEDS_MORE);
                 return;
             }
             if (raw.get("address") != null) {
@@ -3119,7 +3155,6 @@ public final class BleCore {
                 return;
             }
         }
-        Object name = raw.get("name");
         Object address = raw.get("address");
         if (address != null && !(address instanceof String && ((String) address).matches("[0-9A-F]{2}(:[0-9A-F]{2}){5}"))) {
             fail(call, "bad_value", "address is a Bluetooth address like 00:11:22:AA:BB:CC");
@@ -3130,7 +3165,10 @@ public final class BleCore {
             return;
         }
         Map<String, Object> p = obj("services", new ArrayList<Object>(services), "name", name, "address", address,
-                "single", !Boolean.FALSE.equals(raw.get("single")));
+                "single", !Boolean.FALSE.equals(raw.get("single")),
+                "manufacturerId", manufacturerId < 0 ? null : (Object) manufacturerId,
+                "manufacturerHex", prefix == null ? null : hex(prefix),
+                "migrate", migrate);
         int r = ++nextAssociate;
         String err = port.associate(r, p);
         if (err != null) {

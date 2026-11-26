@@ -11,7 +11,9 @@ import AccessorySetupKit
 ///
 /// Nothing here shows or starts anything without the page's call:
 /// - `associate` shows the system picker, once per call (`showPicker`), filtered by the one service UUID
-///   (and name) the call gives;
+///   and/or company identifier (`manufacturer_id`, with `manufacturer_hex` as the manufacturer data blob) and
+///   the name the call gives; with `migrate` it carries an `ASMigrationDisplayItem` for a device the app
+///   already uses through CoreBluetooth;
 /// - the `ASAccessorySession` is activated at launch only when the app declared AccessorySetupKit in its
 ///   Info.plist (activation shows nothing and is what makes `session.accessories` available when the
 ///   page first asks); an app that did not declare it never creates a session.
@@ -35,8 +37,11 @@ import AccessorySetupKit
 final class BleAccessories {
     static let below18 = "AccessorySetupKit needs iOS 18; earlier iOS has no accessory picker for an app"
     static let notDeclared = "the app does not declare AccessorySetupKit: add Bluetooth to NSAccessorySetupKitSupports and the "
-        + "accessory's service to NSAccessorySetupBluetoothServices (and its name to NSAccessorySetupBluetoothNames) in the app's "
+        + "accessory's service to NSAccessorySetupBluetoothServices (or its company identifier to "
+        + "NSAccessorySetupBluetoothCompanyIdentifiers, like 0x004C), and its name to NSAccessorySetupBluetoothNames, in the app's "
         + "Info.plist; declaring it limits CoreBluetooth to the accessories the person set up"
+    static let migrationAfterCentral = "migrate needs a run in which no CBCentralManager exists yet: Apple fails the picker when one "
+        + "was created before the migration is complete. Call associate with migrate before any other ble route in that run"
 
     private let file: URL
     private let log: (String) -> Void
@@ -66,6 +71,19 @@ final class BleAccessories {
 
     /// The app declared Bluetooth in NSAccessorySetupKitSupports.
     static var declared: Bool { plistList("NSAccessorySetupKitSupports").contains("Bluetooth") }
+
+    /// NSAccessorySetupBluetoothCompanyIdentifiers: an array of strings (Apple does not give their form; this
+    /// extension reads the Bluetooth SIG's `0x004C`, and ignores any other spelling, so an id written another
+    /// way answers `unavailable` instead of crashing the picker).
+    static var companyIdentifiers: Set<Int> {
+        var out = Set<Int>()
+        for s in plistList("NSAccessorySetupBluetoothCompanyIdentifiers") {
+            let t = s.trimmingCharacters(in: .whitespaces)
+            guard t.lowercased().hasPrefix("0x"), let v = Int(t.dropFirst(2), radix: 16), v >= 0, v <= 0xFFFF else { continue }
+            out.insert(v)
+        }
+        return out
+    }
 
     /// CBUUID(string:) raises on a malformed string; only these forms reach it.
     private static func normalized(_ s: String) -> String? {
@@ -145,6 +163,9 @@ final class BleAccessories {
             if let a = event.accessory, let info = record(a) { finish(info, nil) }
         case .pickerDidDismiss:
             closed()
+        case .pickerSetupFailed:
+            // The setup of the picked accessory failed: the page gets associate_failed now, not the route timeout.
+            if open > 0 { failed(open, event.error ?? BleAccessories.SetupFailed()) }
         default:
             break
         }
@@ -164,14 +185,24 @@ final class BleAccessories {
 
     @available(iOS 18.0, *)
     private func pick(_ request: Int, _ p: BleObj) -> String? {
-        guard let service = (p["services"] as? [Any])?.first as? String, let uuid = BleAccessories.normalized(service) else {
-            return "bad_value services is one service UUID"
-        }
-        guard BleAccessories.plistList("NSAccessorySetupBluetoothServices").compactMap(BleAccessories.normalized).contains(uuid) else {
-            return "unavailable \(service) is not in NSAccessorySetupBluetoothServices; \(BleAccessories.notDeclared)"
-        }
         let descriptor = ASDiscoveryDescriptor()
-        descriptor.bluetoothServiceUUID = CBUUID(string: uuid)
+        if let service = (p["services"] as? [Any])?.first as? String {
+            guard let uuid = BleAccessories.normalized(service) else { return "bad_value services is one service UUID" }
+            guard BleAccessories.plistList("NSAccessorySetupBluetoothServices").compactMap(BleAccessories.normalized).contains(uuid) else {
+                return "unavailable \(service) is not in NSAccessorySetupBluetoothServices; \(BleAccessories.notDeclared)"
+            }
+            descriptor.bluetoothServiceUUID = CBUUID(string: uuid)
+        }
+        if let id = p["manufacturerId"] as? Int {
+            guard id >= 0, id <= 0xFFFF, BleAccessories.companyIdentifiers.contains(id) else {
+                return "unavailable company identifier \(String(format: "0x%04X", id)) is not in NSAccessorySetupBluetoothCompanyIdentifiers; \(BleAccessories.notDeclared)"
+            }
+            descriptor.bluetoothCompanyIdentifier = ASBluetoothCompanyIdentifier(rawValue: UInt16(id))
+            if let hex = p["manufacturerHex"] as? String, let bytes = BleCore.fromHex(hex), !bytes.isEmpty {
+                descriptor.bluetoothManufacturerDataBlob = Data(bytes)
+                descriptor.bluetoothManufacturerDataMask = Data(repeating: 0xFF, count: bytes.count)
+            }
+        }
         var title = "Bluetooth accessory"
         if let n = p["name"] as? String, !n.isEmpty {
             guard BleAccessories.plistList("NSAccessorySetupBluetoothNames").contains(n) else {
@@ -184,12 +215,23 @@ final class BleAccessories {
         activate()
         let image = UIImage(systemName: "dot.radiowaves.left.and.right")?
             .withTintColor(.label, renderingMode: .alwaysOriginal) ?? UIImage()
-        let item = ASPickerDisplayItem(name: title, productImage: image, descriptor: descriptor)
+        let item: ASPickerDisplayItem
+        if let id = p["migrate"] as? String, let device = UUID(uuidString: id) {
+            // One-time migration of a device the app already set up through CoreBluetooth (Apple, "Use the picker
+            // when migrating to AccessorySetupKit").
+            let m = ASMigrationDisplayItem(name: title, productImage: image, descriptor: descriptor)
+            m.peripheralIdentifier = device
+            item = m
+        } else {
+            item = ASPickerDisplayItem(name: title, productImage: image, descriptor: descriptor)
+        }
         open = request
         asSession?.showPicker(for: [item]) { [weak self] error in
+            // The completion is not the picker's end (Apple: it runs "when it completes the operation", and the
+            // session reports pickerDidPresent and pickerDidDismiss itself): only its error ends the request.
+            guard let error = error else { return }
             DispatchQueue.main.async {
                 MainActor.assumeIsolated {
-                    guard let error = error else { self?.closed(); return }
                     self?.failed(request, error)
                 }
             }
@@ -204,7 +246,10 @@ final class BleAccessories {
             return "not_associated the association is not this app's"
         }
         asSession?.removeAccessory(a) { [weak self] error in
-            if let error = error { self?.log("removeAccessory: \(error.localizedDescription)") }
+            guard let error = error else { return }
+            DispatchQueue.main.async {
+                MainActor.assumeIsolated { self?.log("removeAccessory: \(error.localizedDescription)") }
+            }
         }
         return nil
     }
@@ -229,6 +274,11 @@ final class BleAccessories {
     private func list() -> Any { "platform_limit \(BleAccessories.below18)" }
     private func remove(_ association: Int) -> String? { "platform_limit \(BleAccessories.below18)" }
     #endif
+
+    /// The error of a pickerSetupFailed event that carries none.
+    struct SetupFailed: LocalizedError {
+        var errorDescription: String? { "the accessory could not be set up" }
+    }
 
     /// The accessory the person set up: answers the open picker.
     private func finish(_ info: BleObj, _ err: String?) {

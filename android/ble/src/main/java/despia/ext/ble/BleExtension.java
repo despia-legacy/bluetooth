@@ -624,7 +624,8 @@ public final class BleExtension implements NativeExtension, BleCore.Port {
                 return;
             case "associate": {
                 Map<String, Object> raw = BleCore.obj();
-                for (String k : new String[]{"services", "name", "address"}) if (str(call, k) != null) raw.put(k, str(call, k));
+                for (String k : new String[]{"services", "name", "address", "manufacturer_hex", "migrate"}) if (str(call, k) != null) raw.put(k, str(call, k));
+                if (call.params.get("manufacturer_id") != null) raw.put("manufacturer_id", num(call, "manufacturer_id", -1));
                 if (call.params.get("single") instanceof Boolean) raw.put("single", call.params.get("single"));
                 core.associate(c, raw);
                 return;

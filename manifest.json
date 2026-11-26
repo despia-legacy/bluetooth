@@ -1126,6 +1126,19 @@
           },
           "single": {
             "type": "bool"
+          },
+          "manufacturer_id": {
+            "type": "int",
+            "min": 0,
+            "max": 65535
+          },
+          "manufacturer_hex": {
+            "type": "string",
+            "max": 62
+          },
+          "migrate": {
+            "type": "string",
+            "max": 36
           }
         },
         "timeout_ms": 25000,

@@ -2792,6 +2792,10 @@ final class BleCore {
         + "background and is restored after a relaunch (CBCentralManager state restoration)"
     static let presenceLimit = "iOS has no API to observe a device's presence; a connect with no time limit "
         + "completes when the device comes in range, and state restoration relaunches the app for it"
+    static let migrateAndroid = "migrate is AccessorySetupKit's migration of a device the app already uses; Android has no such step, "
+        + "a device the app already connects to needs none"
+    static let associateCompanyNeedsMore = "a filter by manufacturer_id alone is not enough for the iOS accessory picker: add name or "
+        + "manufacturer_hex (Apple, Discovering and configuring accessories)"
     static let associateIOSAddress = "iOS gives an app no Bluetooth address (AccessorySetupKit answers a "
         + "Bluetooth identifier); filter by services and name"
 
@@ -2898,11 +2902,39 @@ final class BleCore {
             fail(call, "bad_value", "services is one service UUID")
             return
         }
+        // The manufacturer filter, as on scan_start and wake_start: an id (a Bluetooth company identifier), and
+        // optionally hex bytes the advertised manufacturer data starts with.
+        let manufacturerId = BleCore.isSet(raw["manufacturer_id"]) ? ((raw["manufacturer_id"] as? Int) ?? -2) : -1
+        let manufacturerHex = raw["manufacturer_hex"] as? String
+        let prefix = manufacturerHex.flatMap { BleCore.fromHex($0) }
+        if manufacturerId < -1 || manufacturerId > 0xFFFF || (manufacturerHex != nil && (prefix == nil || manufacturerId < 0)) {
+            fail(call, "bad_value", "manufacturer_id is 0 to 65535; manufacturer_hex is hex bytes and needs manufacturer_id")
+            return
+        }
+        let name = raw["name"] as? String
+        var migrate: String?
+        if let m = raw["migrate"], !(m is NSNull) {
+            if android {
+                fail(call, "platform_limit", BleCore.migrateAndroid)
+                return
+            }
+            guard let id = m as? String, id.range(of: "^[0-9A-Fa-f]{8}(-[0-9A-Fa-f]{4}){3}-[0-9A-Fa-f]{12}$", options: .regularExpression) != nil else {
+                fail(call, "bad_value", "migrate is the id of a device the app already uses, a UUID")
+                return
+            }
+            migrate = id.uppercased()
+        }
         // AccessorySetupKit filters by a service UUID or a company identifier (Apple, ASDiscoveryDescriptor:
-        // "Provide at least one UUID or manufacturer ID to filter"), and its accessory has no address.
+        // "Provide at least one UUID or manufacturer ID to filter"), and its accessory has no address. Apple's
+        // "Discovering and configuring accessories": a descriptor with a company identifier needs one more
+        // accessory identifier (a name, or manufacturer data), or the app crashes.
         if !android {
-            if services.isEmpty {
-                fail(call, "bad_value", "services is one service UUID: the iOS accessory picker filters by it")
+            if services.isEmpty && manufacturerId < 0 {
+                fail(call, "bad_value", "services is one service UUID or manufacturer_id is a company identifier: the iOS accessory picker filters by one of them")
+                return
+            }
+            if services.isEmpty && prefix == nil && (name ?? "").isEmpty {
+                fail(call, "bad_value", BleCore.associateCompanyNeedsMore)
                 return
             }
             if let a = raw["address"], !(a is NSNull) {
@@ -2922,7 +2954,10 @@ final class BleCore {
             return
         }
         let p = BleCore.obj(("services", services as [Any]), ("name", BleCore.nul(raw["name"])), ("address", BleCore.nul(address)),
-                            ("single", (raw["single"] as? Bool) != false))
+                            ("single", (raw["single"] as? Bool) != false),
+                            ("manufacturerId", BleCore.nul(manufacturerId < 0 ? nil : manufacturerId)),
+                            ("manufacturerHex", BleCore.nul(prefix.map { BleCore.hex($0) })),
+                            ("migrate", BleCore.nul(migrate)))
         nextAssociate += 1
         let r = nextAssociate
         if let err = port.associate(r, p) {

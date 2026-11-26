@@ -8372,7 +8372,7 @@
                 "name": "Band"
               },
               "out": [
-                "associate 1 {\"services\":[\"0000180d-0000-1000-8000-00805f9b34fb\"],\"name\":\"Band\",\"address\":null,\"single\":true}"
+                "associate 1 {\"services\":[\"0000180d-0000-1000-8000-00805f9b34fb\"],\"name\":\"Band\",\"address\":null,\"single\":true,\"manufacturerId\":null,\"manufacturerHex\":null,\"migrate\":null}"
               ]
             },
             {
@@ -8488,7 +8488,7 @@
                 "single": false
               },
               "out": [
-                "associate 2 {\"services\":[],\"name\":null,\"address\":\"AA:BB:CC:DD:EE:02\",\"single\":false}"
+                "associate 2 {\"services\":[],\"name\":null,\"address\":\"AA:BB:CC:DD:EE:02\",\"single\":false,\"manufacturerId\":null,\"manufacturerHex\":null,\"migrate\":null}"
               ]
             },
             {
@@ -8650,7 +8650,7 @@
                 "name": "Band"
               },
               "out": [
-                "associate 1 {\"services\":[\"0000180d-0000-1000-8000-00805f9b34fb\"],\"name\":\"Band\",\"address\":null,\"single\":true}"
+                "associate 1 {\"services\":[\"0000180d-0000-1000-8000-00805f9b34fb\"],\"name\":\"Band\",\"address\":null,\"single\":true,\"manufacturerId\":null,\"manufacturerHex\":null,\"migrate\":null}"
               ]
             },
             {
@@ -8708,7 +8708,7 @@
                 "services": "180d"
               },
               "out": [
-                "associate 2 {\"services\":[\"0000180d-0000-1000-8000-00805f9b34fb\"],\"name\":null,\"address\":null,\"single\":true}"
+                "associate 2 {\"services\":[\"0000180d-0000-1000-8000-00805f9b34fb\"],\"name\":null,\"address\":null,\"single\":true,\"manufacturerId\":null,\"manufacturerHex\":null,\"migrate\":null}"
               ]
             },
             {
@@ -8732,6 +8732,211 @@
               "out": [
                 "associations",
                 "reply 12 error unavailable"
+              ]
+            }
+          ]
+        },
+        {
+          "name": "associate_manufacturer_filter_android",
+          "platform": "android",
+          "steps": [
+            {
+              "do": "associate",
+              "call": 1,
+              "params": {
+                "manufacturer_id": 76
+              },
+              "out": [
+                "associate 1 {\"services\":[],\"name\":null,\"address\":null,\"single\":true,\"manufacturerId\":76,\"manufacturerHex\":null,\"migrate\":null}"
+              ]
+            },
+            {
+              "do": "associated",
+              "request": 1,
+              "info": {
+                "association": 4,
+                "address": "AA:BB:CC:DD:EE:03",
+                "name": "Band"
+              },
+              "out": [
+                "reply 1 ok {\"association\":4,\"address\":\"AA:BB:CC:DD:EE:03\",\"name\":\"Band\"}"
+              ]
+            },
+            {
+              "do": "associate",
+              "call": 2,
+              "params": {
+                "manufacturer_id": 76,
+                "manufacturer_hex": "0215AB",
+                "name": "Band"
+              },
+              "out": [
+                "associate 2 {\"services\":[],\"name\":\"Band\",\"address\":null,\"single\":true,\"manufacturerId\":76,\"manufacturerHex\":\"0215ab\",\"migrate\":null}"
+              ]
+            },
+            {
+              "do": "associated",
+              "request": 2,
+              "code": "cancelled the device chooser was closed",
+              "out": [
+                "reply 2 error cancelled"
+              ]
+            },
+            {
+              "do": "associate",
+              "call": 3,
+              "params": {
+                "manufacturer_hex": "0215"
+              },
+              "out": [
+                "reply 3 error bad_value"
+              ]
+            },
+            {
+              "do": "associate",
+              "call": 4,
+              "params": {
+                "manufacturer_id": 65536
+              },
+              "out": [
+                "reply 4 error bad_value"
+              ]
+            },
+            {
+              "do": "associate",
+              "call": 5,
+              "params": {
+                "manufacturer_id": 76,
+                "manufacturer_hex": "021"
+              },
+              "out": [
+                "reply 5 error bad_value"
+              ]
+            },
+            {
+              "do": "associate",
+              "call": 6,
+              "params": {
+                "services": "180d",
+                "migrate": "4F8E6A0C-2B1D-4C7E-9A53-1D2E3F4A5B6C"
+              },
+              "out": [
+                "reply 6 error platform_limit"
+              ]
+            }
+          ]
+        },
+        {
+          "name": "associate_company_identifier_migration_and_failures_ios",
+          "platform": "ios",
+          "steps": [
+            {
+              "do": "associate",
+              "call": 1,
+              "params": {
+                "manufacturer_id": 76
+              },
+              "out": [
+                "reply 1 error bad_value"
+              ]
+            },
+            {
+              "do": "associate",
+              "call": 2,
+              "params": {
+                "manufacturer_hex": "0215"
+              },
+              "out": [
+                "reply 2 error bad_value"
+              ]
+            },
+            {
+              "do": "associate",
+              "call": 3,
+              "params": {
+                "manufacturer_id": 76,
+                "name": "Band"
+              },
+              "out": [
+                "associate 1 {\"services\":[],\"name\":\"Band\",\"address\":null,\"single\":true,\"manufacturerId\":76,\"manufacturerHex\":null,\"migrate\":null}"
+              ]
+            },
+            {
+              "do": "associated",
+              "request": 1,
+              "code": "cancelled the accessory picker was closed",
+              "out": [
+                "reply 3 error cancelled"
+              ]
+            },
+            {
+              "do": "associate",
+              "call": 4,
+              "params": {
+                "manufacturer_id": 76,
+                "manufacturer_hex": "0215AB"
+              },
+              "out": [
+                "associate 2 {\"services\":[],\"name\":null,\"address\":null,\"single\":true,\"manufacturerId\":76,\"manufacturerHex\":\"0215ab\",\"migrate\":null}"
+              ]
+            },
+            {
+              "do": "associated",
+              "request": 2,
+              "code": "associate_failed the accessory could not be set up",
+              "out": [
+                "reply 4 error associate_failed"
+              ]
+            },
+            {
+              "do": "associate",
+              "call": 5,
+              "params": {
+                "manufacturer_id": 65536,
+                "name": "Band"
+              },
+              "out": [
+                "reply 5 error bad_value"
+              ]
+            },
+            {
+              "do": "associate",
+              "call": 6,
+              "params": {
+                "services": "180d",
+                "migrate": "4f8e6a0c-2b1d-4c7e-9a53-1d2e3f4a5b6c"
+              },
+              "out": [
+                "associate 3 {\"services\":[\"0000180d-0000-1000-8000-00805f9b34fb\"],\"name\":null,\"address\":null,\"single\":true,\"manufacturerId\":null,\"manufacturerHex\":null,\"migrate\":\"4F8E6A0C-2B1D-4C7E-9A53-1D2E3F4A5B6C\"}"
+              ]
+            },
+            {
+              "do": "associated",
+              "request": 3,
+              "code": "unavailable migrate needs a run in which no CBCentralManager exists yet",
+              "out": [
+                "reply 6 error unavailable"
+              ]
+            },
+            {
+              "do": "associate",
+              "call": 7,
+              "params": {
+                "services": "180d",
+                "migrate": "not-a-device"
+              },
+              "out": [
+                "reply 7 error bad_value"
+              ]
+            },
+            {
+              "do": "associate",
+              "call": 8,
+              "params": {
+                "name": "Band"
+              },
+              "out": [
+                "reply 8 error bad_value"
               ]
             }
           ]

@@ -78,7 +78,7 @@ NEW_MUTATIONS = {  # rules added in this repo (sections "finish", "answers" and 
         ("B1", "if (wake && (sdk == 29 || sdk == 30)) runtime.add(BACKGROUND_LOCATION);", "", "permissions_by_api_level_and_role"),
         ("B2", "boolean scan = \"scan\".equals(role) || \"central\".equals(role) || wake;", "boolean scan = \"scan\".equals(role) || \"central\".equals(role);", "permissions_by_api_level_and_role"),
         ("I1", 'if (raw.get("address") != null) {\n                fail(call, "bad_value", ASSOCIATE_IOS_ADDRESS);', 'if (false) {\n                fail(call, "bad_value", ASSOCIATE_IOS_ADDRESS);', "restoration_ios_wake_presence_are_platform_limits_associate_is_accessory_setup_kit"),
-        ("I2", 'if (services.isEmpty()) {\n                fail(call, "bad_value", "services is one service UUID: the iOS', 'if (false) {\n                fail(call, "bad_value", "services is one service UUID: the iOS', "restoration_ios_wake_presence_are_platform_limits_associate_is_accessory_setup_kit"),
+        ("I2", 'if (services.isEmpty() && manufacturerId < 0) {\n                fail(call, "bad_value", "services is one service UUID or manufacturer_id is a company identifier: the iOS', 'if (false) {\n                fail(call, "bad_value", "services is one service UUID or manufacturer_id is a company identifier: the iOS', "associate_company_identifier_migration_and_failures_ios"),
     ],
     "swift": [
         ("F1", "for k in options.keys where !BleCore.scanOptionKeys.contains(k) {", "for k in options.keys where false {", "finish_scan_filters_by_name_and_manufacturer_with_android_options"),
@@ -104,7 +104,7 @@ NEW_MUTATIONS = {  # rules added in this repo (sections "finish", "answers" and 
         ("P1", 'fail(call, "platform_limit", BleCore.presenceLimit)\n            return\n', 'fail(call, "platform_limit", BleCore.presenceLimit)\n', "restoration_ios_wake_presence_are_platform_limits_associate_is_accessory_setup_kit"),
         ("P2", "if association > 0 && !observing.contains(association) { observing.append(association) }", "", "restoration_presence_relaunch_android"),
         ("I1", 'if let a = raw["address"], !(a is NSNull) {\n                fail(call, "bad_value", BleCore.associateIOSAddress)', 'if false {\n                fail(call, "bad_value", BleCore.associateIOSAddress)', "restoration_ios_wake_presence_are_platform_limits_associate_is_accessory_setup_kit"),
-        ("I2", 'if services.isEmpty {\n                fail(call, "bad_value", "services is one service UUID: the iOS', 'if false {\n                fail(call, "bad_value", "services is one service UUID: the iOS', "restoration_ios_wake_presence_are_platform_limits_associate_is_accessory_setup_kit"),
+        ("I2", 'if services.isEmpty && manufacturerId < 0 {\n                fail(call, "bad_value", "services is one service UUID or manufacturer_id is a company identifier: the iOS', 'if false {\n                fail(call, "bad_value", "services is one service UUID or manufacturer_id is a company identifier: the iOS', "associate_company_identifier_migration_and_failures_ios"),
     ],
 }
 
