@@ -213,7 +213,11 @@ final class BleAccessories {
     private func failed(_ request: Int, _ error: Error) {
         guard open == request else { return }
         open = 0
-        if let e = error as? ASError, e.code == .userCancelled {
+        // Not `error as? ASError`: bridging ASError names the C global ASErrorDomain, which carries no availability, so
+        // the app would link AccessorySetupKit strongly and dyld would refuse to start it on iOS 16 and 17 (the deployment
+        // target is 16.6). The domain and ASErrorCodeUserCancelled (700, ASErrors.h) are compared by value instead.
+        let e = error as NSError
+        if e.domain == "ASErrorDomain" && e.code == 700 {
             answer?(request, nil, "cancelled the accessory picker was closed")
         } else {
             answer?(request, nil, "associate_failed \(error.localizedDescription)")
