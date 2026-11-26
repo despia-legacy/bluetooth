@@ -12,11 +12,17 @@ import android.bluetooth.BluetoothGattServerCallback;
 import android.bluetooth.BluetoothGattService;
 import android.bluetooth.BluetoothManager;
 import android.bluetooth.BluetoothProfile;
+import android.bluetooth.BluetoothServerSocket;
+import android.bluetooth.BluetoothSocket;
 import android.bluetooth.le.AdvertiseCallback;
 import android.bluetooth.le.AdvertiseData;
 import android.bluetooth.le.AdvertiseSettings;
+import android.bluetooth.le.AdvertisingSet;
+import android.bluetooth.le.AdvertisingSetCallback;
+import android.bluetooth.le.AdvertisingSetParameters;
 import android.bluetooth.le.BluetoothLeAdvertiser;
 import android.bluetooth.le.BluetoothLeScanner;
+import android.bluetooth.le.PeriodicAdvertisingParameters;
 import android.bluetooth.le.ScanCallback;
 import android.bluetooth.le.ScanFilter;
 import android.bluetooth.le.ScanRecord;
@@ -32,6 +38,8 @@ import android.os.Handler;
 import android.os.ParcelUuid;
 import android.util.SparseArray;
 
+import java.io.IOException;
+import java.io.InputStream;
 import java.util.ArrayList;
 import java.util.Collections;
 import java.util.HashMap;
@@ -41,6 +49,9 @@ import java.util.Locale;
 import java.util.Map;
 import java.util.Set;
 import java.util.UUID;
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.Executors;
+import java.util.concurrent.RejectedExecutionException;
 
 /**
  * The Android Bluetooth stack behind {@link BleCore}: scanner, GATT client, GATT server, advertiser,
@@ -62,6 +73,8 @@ final class AndroidRadio {
     private final Handler main;
     private final BleCore core;
     private BroadcastReceiver receiver;
+    /** The {@code connection_events} route: null until the page asks; then the ids it watches (empty: every device). */
+    private java.util.Set<String> aclIds;
     private ScanCallback scanCallback;
     private BluetoothLeScanner scanner;
     /** One session per connection attempt, by gen. */
@@ -165,6 +178,26 @@ final class AndroidRadio {
         public void onServiceChanged(BluetoothGatt g) {
             main.post(() -> core.gattChanged(id, gen));
         }
+
+        @Override
+        public void onPhyRead(BluetoothGatt g, int txPhy, int rxPhy, int status) {
+            main.post(() -> {
+                if (!"phy_read".equals(pendingKind)) return;
+                done(this, status, BleCore.obj("tx", phyName(txPhy), "rx", phyName(rxPhy)));
+            });
+        }
+
+        @Override
+        public void onPhyUpdate(BluetoothGatt g, int txPhy, int rxPhy, int status) {
+            // Answers setPreferredPhy, and also reports a change the peer or the stack made.
+            main.post(() -> core.phyChanged(id, gen, phyName(txPhy), phyName(rxPhy),
+                    status == BluetoothGatt.GATT_SUCCESS ? null : "status " + status));
+        }
+    }
+
+    /** The page's name of a BluetoothDevice.PHY_LE_* value. */
+    static String phyName(int phy) {
+        return phy == BluetoothDevice.PHY_LE_2M ? "2m" : phy == BluetoothDevice.PHY_LE_CODED ? "coded" : "1m";
     }
 
     AndroidRadio(Context app, Handler main, BleCore core) {
@@ -197,12 +230,38 @@ final class AndroidRadio {
         receiver = new BroadcastReceiver() {
             @Override
             public void onReceive(Context c, Intent intent) {
+                if (BluetoothDevice.ACTION_BOND_STATE_CHANGED.equals(intent.getAction())) {
+                    BluetoothDevice d = device(intent);
+                    if (d == null) return;
+                    String id = d.getAddress();
+                    String state = bondName(intent.getIntExtra(BluetoothDevice.EXTRA_BOND_STATE, BluetoothDevice.BOND_NONE));
+                    String before = bondName(intent.getIntExtra(BluetoothDevice.EXTRA_PREVIOUS_BOND_STATE, BluetoothDevice.BOND_NONE));
+                    main.post(() -> core.external("bond", BleCore.obj("id", id, "state", state, "previous", before)));
+                    return;
+                }
+                String action = intent.getAction();
+                if (BluetoothDevice.ACTION_ACL_CONNECTED.equals(action) || BluetoothDevice.ACTION_ACL_DISCONNECTED.equals(action)) {
+                    BluetoothDevice d = device(intent);
+                    if (d == null) return;
+                    String id = d.getAddress();
+                    String event = BluetoothDevice.ACTION_ACL_CONNECTED.equals(action) ? "connected" : "disconnected";
+                    String name = nameOf(d);
+                    main.post(() -> {
+                        java.util.Set<String> w = aclIds;
+                        if (w == null || (!w.isEmpty() && !w.contains(id))) return;
+                        core.external("connection_event", BleCore.obj("id", id, "event", event, "name", name));
+                    });
+                    return;
+                }
                 int s = intent.getIntExtra(BluetoothAdapter.EXTRA_STATE, BluetoothAdapter.ERROR);
                 String state = s == BluetoothAdapter.STATE_ON ? "on" : "off";
                 main.post(() -> adapterChanged(state));
             }
         };
         IntentFilter f = new IntentFilter(BluetoothAdapter.ACTION_STATE_CHANGED);
+        f.addAction(BluetoothDevice.ACTION_BOND_STATE_CHANGED);
+        f.addAction(BluetoothDevice.ACTION_ACL_CONNECTED);
+        f.addAction(BluetoothDevice.ACTION_ACL_DISCONNECTED);
         if (Build.VERSION.SDK_INT >= 33) {
             app.registerReceiver(receiver, f, Context.RECEIVER_NOT_EXPORTED);
         } else {
@@ -215,30 +274,166 @@ final class AndroidRadio {
         if (!"on".equals(state)) {
             closeServer();
             advertisers.clear();
+            setCallbacks.clear();
         }
         core.adapter(state);
     }
 
+    /** EXTRA_DEVICE of a broadcast; the typed getter from API 33, where the untyped one is deprecated. */
+    @SuppressWarnings("deprecation")
+    static BluetoothDevice device(Intent intent) {
+        if (Build.VERSION.SDK_INT >= 33) return intent.getParcelableExtra(BluetoothDevice.EXTRA_DEVICE, BluetoothDevice.class);
+        return intent.getParcelableExtra(BluetoothDevice.EXTRA_DEVICE);
+    }
+
+    static String bondName(int s) {
+        return s == BluetoothDevice.BOND_BONDED ? "bonded" : s == BluetoothDevice.BOND_BONDING ? "bonding" : "none";
+    }
+
+    // ---- bonding and system devices -----------------------------------------------------------
+
+    /** createBond: the system shows its own pairing prompt; the outcome arrives as {@code bond} events. */
+    String bond(String id) {
+        BluetoothAdapter a = adapter();
+        if (a == null || !a.isEnabled()) return "unavailable Bluetooth is " + adapterState();
+        if (!BluetoothAdapter.checkBluetoothAddress(id)) return "unknown_device " + id;
+        try {
+            BluetoothDevice d = a.getRemoteDevice(id);
+            int now = d.getBondState();
+            if (now != BluetoothDevice.BOND_NONE) return "=" + bondName(now);
+            return d.createBond() ? null : "bond_failed the stack refused createBond";
+        } catch (SecurityException e) {
+            return "permission_denied Bluetooth access was revoked";
+        } catch (RuntimeException e) {
+            return "bond_failed " + e.getClass().getSimpleName();
+        }
+    }
+
+    /** The bonded devices: getBondedDevices (classic and LE), with their type. */
+    List<Object> bonds() {
+        List<Object> out = new ArrayList<>();
+        BluetoothAdapter a = adapter();
+        if (a == null || !a.isEnabled()) return null;
+        for (BluetoothDevice d : a.getBondedDevices()) out.add(deviceInfo(d));
+        return out;
+    }
+
+    /** Devices the system holds a GATT connection to, from any app (BluetoothManager.getConnectedDevices). */
+    List<Object> systemDevices() {
+        BluetoothManager m = (BluetoothManager) app.getSystemService(Context.BLUETOOTH_SERVICE);
+        BluetoothAdapter a = adapter();
+        if (m == null || a == null || !a.isEnabled()) return null;
+        List<Object> out = new ArrayList<>();
+        for (BluetoothDevice d : m.getConnectedDevices(BluetoothProfile.GATT)) out.add(deviceInfo(d));
+        return out;
+    }
+
+    /**
+     * The {@code connection_events} route. Android reports every link the system opens or closes, for any
+     * app, with BluetoothDevice.ACTION_ACL_CONNECTED and ACTION_ACL_DISCONNECTED; those broadcasts carry the
+     * device and no service list, so ids filter here and services cannot (the answer says so in
+     * {@code applied}). Calling again replaces the watched ids.
+     */
+    String connectionEvents(List<String> ids) {
+        BluetoothAdapter a = adapter();
+        if (a == null || !a.isEnabled()) return "unavailable Bluetooth is " + adapterState();
+        aclIds = new java.util.HashSet<>(ids);
+        return null;
+    }
+
+    /** The device name, or null when the system has none or withholds it. */
+    private static String nameOf(BluetoothDevice d) {
+        try {
+            return d.getName();
+        } catch (SecurityException e) {
+            return null;
+        }
+    }
+
+    private static Map<String, Object> deviceInfo(BluetoothDevice d) {
+        int t = d.getType();
+        String type = t == BluetoothDevice.DEVICE_TYPE_LE ? "le" : t == BluetoothDevice.DEVICE_TYPE_CLASSIC ? "classic"
+                : t == BluetoothDevice.DEVICE_TYPE_DUAL ? "dual" : "unknown";
+        return BleCore.obj("id", d.getAddress(), "name", d.getName(), "type", type, "bond", bondName(d.getBondState()));
+    }
+
     // ---- scan -----------------------------------------------------------------------------------
 
-    String scanStart(int scan, List<String> services, boolean duplicates, String mode) {
+    /**
+     * One ScanFilter per (service, name) pair, each with the manufacturer filter: within a filter the
+     * fields must all match and filters are alternatives (ScanFilter reference), so the platform keeps
+     * a device that has one of the services AND one of the names AND the manufacturer prefix, the same
+     * rule the core applies to what is reported.
+     */
+    static List<ScanFilter> filters(List<String> services, List<String> names, int manufacturerId, byte[] prefix) {
+        List<ScanFilter> out = new ArrayList<>();
+        List<String> svc = services.isEmpty() ? Collections.singletonList(null) : services;
+        List<String> nm = names.isEmpty() ? Collections.singletonList(null) : names;
+        if (services.isEmpty() && names.isEmpty() && manufacturerId < 0) return out;
+        for (String u : svc) {
+            for (String n : nm) {
+                ScanFilter.Builder b = new ScanFilter.Builder();
+                if (u != null) b.setServiceUuid(ParcelUuid.fromString(u));
+                if (n != null) b.setDeviceName(n);
+                if (manufacturerId >= 0) b.setManufacturerData(manufacturerId, prefix == null ? new byte[0] : prefix);
+                out.add(b.build());
+            }
+        }
+        return out;
+    }
+
+    String scanStart(int scan, List<String> services, boolean duplicates, String mode, Map<String, Object> options,
+                     List<String> names, int manufacturerId, byte[] prefix) {
         BluetoothAdapter a = adapter();
         BluetoothLeScanner s = a == null || !a.isEnabled() ? null : a.getBluetoothLeScanner();
         if (s == null) return "unavailable Bluetooth is " + adapterState();
-        List<ScanFilter> filters = new ArrayList<>();
-        for (String u : services) {
-            filters.add(new ScanFilter.Builder().setServiceUuid(ParcelUuid.fromString(u)).build());
-        }
+        List<ScanFilter> filters = filters(services, names, manufacturerId, prefix);
         int m = "low_power".equals(mode) ? ScanSettings.SCAN_MODE_LOW_POWER
-                : "low_latency".equals(mode) ? ScanSettings.SCAN_MODE_LOW_LATENCY : ScanSettings.SCAN_MODE_BALANCED;
-        ScanSettings settings = new ScanSettings.Builder().setScanMode(m).build();
+                : "low_latency".equals(mode) ? ScanSettings.SCAN_MODE_LOW_LATENCY
+                : "opportunistic".equals(mode) ? ScanSettings.SCAN_MODE_OPPORTUNISTIC : ScanSettings.SCAN_MODE_BALANCED;
+        ScanSettings.Builder sb = new ScanSettings.Builder().setScanMode(m);
+        Object callback = options.get("callback_type");
+        if (callback != null) {
+            sb.setCallbackType("first_match".equals(callback) ? ScanSettings.CALLBACK_TYPE_FIRST_MATCH
+                    : "first_match_lost".equals(callback) ? ScanSettings.CALLBACK_TYPE_FIRST_MATCH | ScanSettings.CALLBACK_TYPE_MATCH_LOST
+                    : ScanSettings.CALLBACK_TYPE_ALL_MATCHES);
+        }
+        Object match = options.get("match");
+        if (match != null) {
+            sb.setMatchMode("sticky".equals(match) ? ScanSettings.MATCH_MODE_STICKY : ScanSettings.MATCH_MODE_AGGRESSIVE);
+        }
+        Object matches = options.get("matches");
+        if (matches != null) {
+            sb.setNumOfMatches("one".equals(matches) ? ScanSettings.MATCH_NUM_ONE_ADVERTISEMENT
+                    : "few".equals(matches) ? ScanSettings.MATCH_NUM_FEW_ADVERTISEMENT : ScanSettings.MATCH_NUM_MAX_ADVERTISEMENT);
+        }
+        if (options.get("report_delay") instanceof Number) sb.setReportDelay(((Number) options.get("report_delay")).longValue());
+        if (Build.VERSION.SDK_INT >= 26) {
+            if (options.get("legacy") instanceof Boolean) sb.setLegacy((Boolean) options.get("legacy"));
+            Object phy = options.get("phy");
+            if (phy != null) {
+                sb.setPhy("coded".equals(phy) ? BluetoothDevice.PHY_LE_CODED
+                        : "all".equals(phy) ? ScanSettings.PHY_LE_ALL_SUPPORTED : BluetoothDevice.PHY_LE_1M);
+            }
+        } else if (options.containsKey("legacy") || options.containsKey("phy")) {
+            return "platform_limit extended scanning (legacy, phy) needs Android 8.0 (API 26)";
+        }
+        ScanSettings settings;
+        try {
+            settings = sb.build();
+        } catch (IllegalArgumentException e) {
+            return "bad_value " + e.getMessage();
+        }
         Set<String> seen = Collections.synchronizedSet(new HashSet<>());
         ScanCallback cb = new ScanCallback() {
             @Override
             public void onScanResult(int callbackType, ScanResult r) {
                 String id = r.getDevice().getAddress();
-                boolean first = seen.add(id);
+                boolean lost = callbackType == ScanSettings.CALLBACK_TYPE_MATCH_LOST;
+                if (lost) seen.remove(id);
+                boolean first = lost || seen.add(id);
                 Map<String, Object> adv = duplicates || first ? advertisement(r) : null;
+                if (adv != null && lost) adv.put("lost", true);
                 main.post(() -> {
                     if (adv != null) core.device(scan, id, adv);
                 });
@@ -488,6 +683,8 @@ final class AndroidRadio {
             if ("rssi".equals(kind)) {
                 return begin(s, op, kind, null, g.readRemoteRssi(), "readRemoteRssi");
             }
+            if ("priority".equals(kind)) return priority(s, op, key);
+            if ("phy_read".equals(kind) || "phy_set".equals(kind)) return phy(s, op, kind, key);
             BluetoothGattCharacteristic c = resolve(g, key);
             if (c == null) return "not_found no such characteristic (run discover first)";
             int props = c.getProperties();
@@ -542,6 +739,70 @@ final class AndroidRadio {
         }
     }
 
+    /**
+     * requestConnectionPriority. The platform gives no callback for it, so the op completes on the
+     * next main-thread turn once the stack accepted the request (BluetoothGatt reference).
+     */
+    private String priority(Session s, int op, String level) {
+        int p;
+        switch (level) {
+            case "high":
+                p = BluetoothGatt.CONNECTION_PRIORITY_HIGH;
+                break;
+            case "low_power":
+                p = BluetoothGatt.CONNECTION_PRIORITY_LOW_POWER;
+                break;
+            case "dck":
+                if (Build.VERSION.SDK_INT < 34) return "platform_limit CONNECTION_PRIORITY_DCK needs Android 14 (API 34)";
+                p = BluetoothGatt.CONNECTION_PRIORITY_DCK;
+                break;
+            default:
+                p = BluetoothGatt.CONNECTION_PRIORITY_BALANCED;
+        }
+        String refused = begin(s, op, "priority", null, s.gatt.requestConnectionPriority(p), "requestConnectionPriority");
+        if (refused != null) return refused;
+        main.post(() -> {
+            if (s.pendingOp == op && "priority".equals(s.pendingKind)) complete(s, null, null, BleCore.obj("level", level));
+        });
+        return null;
+    }
+
+    /** readPhy, or setPreferredPhy with key {@code tx/rx/coded} (tx and rx comma lists of 1m, 2m, coded). */
+    private String phy(Session s, int op, String kind, String key) {
+        if (Build.VERSION.SDK_INT < 26) return "platform_limit LE PHY control needs Android 8.0 (API 26)";
+        if ("phy_read".equals(kind)) {
+            s.gatt.readPhy();
+            return begin(s, op, kind, null, true, "readPhy");
+        }
+        String[] p = key.split("/", -1);
+        int option = "s2".equals(p[2]) ? BluetoothDevice.PHY_OPTION_S2
+                : "s8".equals(p[2]) ? BluetoothDevice.PHY_OPTION_S8 : BluetoothDevice.PHY_OPTION_NO_PREFERRED;
+        s.gatt.setPreferredPhy(phyMask(p[0]), phyMask(p[1]), option);
+        return begin(s, op, kind, null, true, "setPreferredPhy");
+    }
+
+    static int phyMask(String csv) {
+        int m = 0;
+        for (String n : csv.split(",")) {
+            m |= "2m".equals(n) ? BluetoothDevice.PHY_LE_2M_MASK : "coded".equals(n) ? BluetoothDevice.PHY_LE_CODED_MASK
+                    : BluetoothDevice.PHY_LE_1M_MASK;
+        }
+        return m;
+    }
+
+    /** The key of the first discovered characteristic that takes the write, or null. */
+    String writable(String id, int gen, boolean withResponse) {
+        Session s = sessions.get(gen);
+        if (s == null || !s.connected) return null;
+        int want = withResponse ? BluetoothGattCharacteristic.PROPERTY_WRITE : BluetoothGattCharacteristic.PROPERTY_WRITE_NO_RESPONSE;
+        for (BluetoothGattService svc : s.gatt.getServices()) {
+            for (BluetoothGattCharacteristic c : svc.getCharacteristics()) {
+                if ((c.getProperties() & want) != 0) return keyOf(s.gatt, c);
+            }
+        }
+        return null;
+    }
+
     @SuppressWarnings("deprecation")
     private static boolean writeCharacteristic(BluetoothGatt g, BluetoothGattCharacteristic c, byte[] data, int type) {
         if (Build.VERSION.SDK_INT >= 33) {
@@ -593,6 +854,12 @@ final class AndroidRadio {
     /** ATT error codes the platform has no constant for (Bluetooth Core, Vol 3, Part F, 3.4.1.1). */
     static final int ATT_ATTRIBUTE_NOT_FOUND = 0x0A;
     static final int ATT_UNLIKELY = 0x0E;
+    /** ATT error codes (Bluetooth Core 5.4, Vol 3, Part F, 3.4.1.1); sendResponse passes them to the central as they are. */
+    static final int ATT_INSUFFICIENT_AUTHENTICATION = 0x05;
+    static final int ATT_REQUEST_NOT_SUPPORTED = 0x06;
+    static final int ATT_INSUFFICIENT_AUTHORIZATION = 0x08;
+    static final int ATT_INSUFFICIENT_ENCRYPTION = 0x0F;
+    static final int ATT_INSUFFICIENT_RESOURCES = 0x11;
 
     /**
      * The GATT server of one epoch: its own platform object and its own callback, like a client
@@ -604,6 +871,8 @@ final class AndroidRadio {
         final Map<String, BluetoothGattService> table = new HashMap<>();
         /** The notification packet onNotificationSent answers (the core sends one at a time). */
         int packet;
+        /** Requests the page answers (characteristics with flag a), by the core's request number. */
+        final Map<Integer, Asked> asked = new HashMap<>();
 
         Server(int epoch) {
             this.epoch = epoch;
@@ -665,12 +934,27 @@ final class AndroidRadio {
         @Override
         public void onExecuteWrite(BluetoothDevice device, int requestId, boolean execute) {
             String id = device.getAddress();
-            main.post(() -> respond(this, device, requestId, status(core.executeWrite(epoch, id, execute), false), 0, null));
+            main.post(() -> executeWrite(this, device, id, requestId, execute));
         }
 
         @Override
         public void onNotificationSent(BluetoothDevice device, int status) {
             main.post(() -> core.notifySent(epoch, packet, status == BluetoothGatt.GATT_SUCCESS ? null : "status " + status));
+        }
+    }
+
+    /** One ATT request the page answers with respond: the platform's handle to send the response on. */
+    static final class Asked {
+        final BluetoothDevice device;
+        final String id;
+        final int requestId;
+        final boolean read;
+
+        Asked(BluetoothDevice device, String id, int requestId, boolean read) {
+            this.device = device;
+            this.id = id;
+            this.requestId = requestId;
+            this.read = read;
         }
     }
 
@@ -738,6 +1022,7 @@ final class AndroidRadio {
             for (Session x : sessions.values()) if (x.id.equals(id)) return;
             core.centralConnected(s.epoch, id, 23);
         } else {
+            s.asked.values().removeIf(q -> q.id.equals(id));
             core.centralDisconnected(s.epoch, id);
         }
     }
@@ -755,6 +1040,16 @@ final class AndroidRadio {
                 return BluetoothGatt.GATT_INVALID_OFFSET;
             case "invalid_length":
                 return BluetoothGatt.GATT_INVALID_ATTRIBUTE_LENGTH;
+            case "insufficient_authentication":
+                return ATT_INSUFFICIENT_AUTHENTICATION;
+            case "insufficient_authorization":
+                return ATT_INSUFFICIENT_AUTHORIZATION;
+            case "insufficient_encryption":
+                return ATT_INSUFFICIENT_ENCRYPTION;
+            case "not_supported":
+                return ATT_REQUEST_NOT_SUPPORTED;
+            case "insufficient_resources":
+                return ATT_INSUFFICIENT_RESOURCES;
             default:
                 return ATT_UNLIKELY;
         }
@@ -770,15 +1065,49 @@ final class AndroidRadio {
 
     private void readRequest(Server s, BluetoothDevice device, String id, int requestId, int offset, String key) {
         Map<String, Object> r = key == null ? BleCore.obj("status", "not_found") : core.readRequest(s.epoch, id, 0, key, offset);
+        if ("pending".equals(r.get("status"))) {
+            s.asked.put((Integer) r.get("request"), new Asked(device, id, requestId, true));
+            return;
+        }
         String hex = (String) r.get("hex");
         respond(s, device, requestId, status((String) r.get("status"), true), offset, hex == null ? null : BleCore.fromHex(hex));
     }
 
     private void writeRequest(Server s, BluetoothDevice device, String id, int requestId, String key, boolean prepared,
                               boolean responseNeeded, int offset, byte[] value) {
-        String r = key == null ? "not_found" : core.writeRequests(s.epoch, id, 0,
-                Collections.singletonList(BleCore.obj("key", key, "offset", offset, "hex", BleCore.hex(value))), prepared);
+        String r = key == null ? "not_found" : core.writeRequests(s.epoch, id, 0, Collections.singletonList(
+                BleCore.obj("key", key, "offset", offset, "hex", BleCore.hex(value), "response", responseNeeded)), prepared);
+        if (r.startsWith("pending ")) {
+            s.asked.put(Integer.parseInt(r.substring(8)), new Asked(device, id, requestId, false));
+            return;
+        }
         if (responseNeeded) respond(s, device, requestId, status(r, false), offset, prepared ? value : null);
+    }
+
+    private void executeWrite(Server s, BluetoothDevice device, String id, int requestId, boolean execute) {
+        String r = core.executeWrite(s.epoch, id, execute);
+        if (r.startsWith("pending ")) {
+            s.asked.put(Integer.parseInt(r.substring(8)), new Asked(device, id, requestId, false));
+            return;
+        }
+        respond(s, device, requestId, status(r, false), 0, null);
+    }
+
+    /** The page's answer to request {@code request} (or the core's unlikely when the page did not answer in time). */
+    String attRespond(int epoch, int request, String outcome, int offset, byte[] data) {
+        Server s = server;
+        Asked q = s == null || s.epoch != epoch ? null : s.asked.remove(request);
+        if (q == null) return "unavailable the request is no longer open on the radio (its central left or Bluetooth went off)";
+        try {
+            if (!s.gatt.sendResponse(q.device, q.requestId, status(outcome, q.read), offset, data)) {
+                return "gatt_error sendResponse was refused by the stack";
+            }
+        } catch (SecurityException e) {
+            return "permission_denied Bluetooth access was revoked";
+        } catch (RuntimeException e) {
+            return "gatt_error " + e.getClass().getSimpleName();
+        }
+        return null;
     }
 
     /** The CCCD is served here (Android leaves it to the app); any other descriptor is not in the table. */
@@ -911,10 +1240,17 @@ final class AndroidRadio {
         int m = "low_power".equals(mode) ? AdvertiseSettings.ADVERTISE_MODE_LOW_POWER
                 : "low_latency".equals(mode) ? AdvertiseSettings.ADVERTISE_MODE_LOW_LATENCY : AdvertiseSettings.ADVERTISE_MODE_BALANCED;
         // The duration is the core's own timer; the platform's 180 s cap would end longer ones early.
-        AdvertiseSettings settings = new AdvertiseSettings.Builder().setAdvertiseMode(m)
-                .setConnectable(Boolean.TRUE.equals(p.get("connectable"))).setTimeout(0).build();
+        AdvertiseSettings.Builder sb = new AdvertiseSettings.Builder().setAdvertiseMode(m)
+                .setConnectable(Boolean.TRUE.equals(p.get("connectable"))).setTimeout(0);
+        Object tx = p.get("txPower");
+        if (tx != null) {
+            sb.setTxPowerLevel("ultra_low".equals(tx) ? AdvertiseSettings.ADVERTISE_TX_POWER_ULTRA_LOW
+                    : "low".equals(tx) ? AdvertiseSettings.ADVERTISE_TX_POWER_LOW
+                    : "high".equals(tx) ? AdvertiseSettings.ADVERTISE_TX_POWER_HIGH : AdvertiseSettings.ADVERTISE_TX_POWER_MEDIUM);
+        }
+        AdvertiseSettings settings = sb.build();
         AdvertiseData.Builder data = new AdvertiseData.Builder()
-                .setIncludeDeviceName(p.get("name") != null).setIncludeTxPowerLevel(false);
+                .setIncludeDeviceName(p.get("name") != null).setIncludeTxPowerLevel(Boolean.TRUE.equals(p.get("includeTxPower")));
         for (Object u : (List<?>) p.get("services")) data.addServiceUuid(ParcelUuid.fromString((String) u));
         if (p.get("manufacturerId") != null) {
             data.addManufacturerData((Integer) p.get("manufacturerId"), BleCore.fromHex((String) p.get("manufacturerHex")));
@@ -954,6 +1290,364 @@ final class AndroidRadio {
         } catch (RuntimeException ignored) {
             // Bluetooth went off meanwhile: advertising ended with it.
         }
+    }
+
+    // ---- L2CAP connection-oriented channels (API 29) --------------------------------------------
+
+    /** Before API 29 Android has no LE L2CAP channel API: a platform limit, with its source. */
+    static final String L2CAP_LIMIT = "platform_limit LE L2CAP channels need Android 10 (API 29): "
+            + "BluetoothAdapter.listenUsingL2capChannel and BluetoothDevice.createL2capChannel were added in API level 29 "
+            + "(developer.android.com/reference/android/bluetooth/BluetoothDevice#createL2capChannel(int), read 2026-11-24)";
+    /** Bytes per read: an SDU larger than this arrives in several l2cap_data records. */
+    static final int L2CAP_READ = 2048;
+
+    /** One open channel: its socket, and one writer thread so a send never blocks the main thread. */
+    static final class Chan {
+        final int n;
+        final BluetoothSocket socket;
+        final ExecutorService out = Executors.newSingleThreadExecutor();
+
+        Chan(int n, BluetoothSocket socket) {
+            this.n = n;
+            this.socket = socket;
+        }
+
+        void close() {
+            out.shutdownNow();
+            try {
+                socket.close();
+            } catch (IOException ignored) {
+                // Already closed by the stack.
+            }
+        }
+    }
+
+    /** Published listeners by PSM; each has an accept thread that ends when its socket closes. */
+    private final Map<Integer, BluetoothServerSocket> listeners = new HashMap<>();
+    private final Map<Integer, Chan> chans = new HashMap<>();
+
+    private static String ioError(IOException e) {
+        return e.getClass().getSimpleName() + (e.getMessage() == null ? "" : ": " + e.getMessage());
+    }
+
+    String l2capPublish(int epoch, int t, boolean encrypted) {
+        if (Build.VERSION.SDK_INT < 29) return L2CAP_LIMIT;
+        BluetoothAdapter a = adapter();
+        if (a == null || !a.isEnabled()) return "unavailable Bluetooth is " + adapterState();
+        BluetoothServerSocket ss;
+        try {
+            ss = encrypted ? a.listenUsingL2capChannel() : a.listenUsingInsecureL2capChannel();
+        } catch (SecurityException e) {
+            return "permission_denied Bluetooth access was revoked";
+        } catch (IOException e) {
+            return "l2cap_failed " + ioError(e);
+        } catch (RuntimeException e) {
+            return "l2cap_failed " + e.getClass().getSimpleName();
+        }
+        int psm = ss.getPsm();
+        listeners.put(psm, ss);
+        Thread th = new Thread(() -> accept(epoch, psm, ss), "ble-l2cap-accept-" + psm);
+        th.setDaemon(true);
+        th.start();
+        main.post(() -> core.l2capPublished(epoch, t, psm, null));
+        return null;
+    }
+
+    /** The accept loop of one listener (its own thread); every accepted socket goes to the main thread. */
+    private void accept(int epoch, int psm, BluetoothServerSocket ss) {
+        while (true) {
+            BluetoothSocket so;
+            try {
+                so = ss.accept();
+            } catch (IOException e) {
+                return; // l2capUnpublish or Bluetooth off closed the listener.
+            }
+            String peer = so.getRemoteDevice().getAddress();
+            main.post(() -> incoming(epoch, psm, peer, so));
+        }
+    }
+
+    private void incoming(int epoch, int psm, String peer, BluetoothSocket so) {
+        int n = listeners.containsKey(psm) ? core.l2capIncoming(epoch, psm, peer) : -1;
+        Chan ch = new Chan(n, so);
+        if (n < 0) {
+            ch.close();
+            return;
+        }
+        chans.put(n, ch);
+        read(ch);
+    }
+
+    void l2capUnpublish(int psm) {
+        BluetoothServerSocket ss = listeners.remove(psm);
+        if (ss == null) return;
+        try {
+            ss.close();
+        } catch (IOException ignored) {
+            // Already closed with Bluetooth.
+        }
+    }
+
+    String l2capOpen(int epoch, int n, String id, int psm, boolean encrypted) {
+        if (Build.VERSION.SDK_INT < 29) return L2CAP_LIMIT;
+        BluetoothAdapter a = adapter();
+        if (a == null || !a.isEnabled()) return "unavailable Bluetooth is " + adapterState();
+        if (!BluetoothAdapter.checkBluetoothAddress(id)) return "unknown_device " + id;
+        BluetoothSocket so;
+        try {
+            BluetoothDevice d = a.getRemoteDevice(id);
+            so = encrypted ? d.createL2capChannel(psm) : d.createInsecureL2capChannel(psm);
+        } catch (SecurityException e) {
+            return "permission_denied Bluetooth access was revoked";
+        } catch (IOException e) {
+            return "l2cap_failed " + ioError(e);
+        } catch (RuntimeException e) {
+            return "l2cap_failed " + e.getClass().getSimpleName();
+        }
+        Chan ch = new Chan(n, so);
+        chans.put(n, ch);
+        Thread th = new Thread(() -> {
+            String code = null;
+            try {
+                so.connect();
+            } catch (IOException e) {
+                code = ioError(e);
+            }
+            String c = code;
+            main.post(() -> opened(epoch, ch, c));
+        }, "ble-l2cap-open-" + n);
+        th.setDaemon(true);
+        th.start();
+        return null;
+    }
+
+    private void opened(int epoch, Chan ch, String code) {
+        if (chans.get(ch.n) != ch) {
+            ch.close(); // l2cap_close or the core's timeout ended it meanwhile.
+            return;
+        }
+        if (code != null) {
+            chans.remove(ch.n);
+            ch.close();
+        }
+        core.l2capOpened(epoch, ch.n, code);
+        if (code == null && chans.get(ch.n) == ch) read(ch);
+    }
+
+    /** The read loop of one channel (its own thread); data and the end go to the main thread. */
+    private void read(Chan ch) {
+        Thread th = new Thread(() -> {
+            String code = null;
+            byte[] buf = new byte[L2CAP_READ];
+            try {
+                InputStream in = ch.socket.getInputStream();
+                int k;
+                while ((k = in.read(buf)) >= 0) {
+                    if (k == 0) continue;
+                    String hex = BleCore.hex(java.util.Arrays.copyOf(buf, k));
+                    main.post(() -> {
+                        if (chans.get(ch.n) == ch) core.l2capData(ch.n, hex);
+                    });
+                }
+            } catch (IOException e) {
+                code = ioError(e);
+            }
+            String c = code;
+            main.post(() -> ended(ch, c));
+        }, "ble-l2cap-read-" + ch.n);
+        th.setDaemon(true);
+        th.start();
+    }
+
+    /** The channel ended on the platform's side; nothing when this side closed it first. */
+    private void ended(Chan ch, String code) {
+        if (chans.get(ch.n) != ch) return;
+        chans.remove(ch.n);
+        ch.close();
+        core.l2capClosed(ch.n, code);
+    }
+
+    String l2capSend(int n, byte[] data) {
+        Chan ch = chans.get(n);
+        if (ch == null) return "not_found the channel is closed";
+        try {
+            ch.out.execute(() -> {
+                try {
+                    ch.socket.getOutputStream().write(data);
+                } catch (IOException e) {
+                    String c = ioError(e);
+                    main.post(() -> ended(ch, c));
+                }
+            });
+        } catch (RejectedExecutionException e) {
+            return "not_connected the channel is closing";
+        }
+        return null;
+    }
+
+    void l2capClose(int n) {
+        Chan ch = chans.remove(n);
+        if (ch != null) ch.close();
+    }
+
+    // ---- advertising sets (API 26) ------------------------------------------------------------
+
+    static final String SET_LIMIT = "platform_limit advertising sets need Android 8.0 (API 26): "
+            + "BluetoothLeAdvertiser.startAdvertisingSet was added in API level 26 "
+            + "(developer.android.com/reference/android/bluetooth/le/BluetoothLeAdvertiser#startAdvertisingSet, read 2026-11-24)";
+
+    private final Map<Integer, AdvertisingSetCallback> setCallbacks = new HashMap<>();
+
+    private static int phy(Object name) {
+        return "coded".equals(name) ? BluetoothDevice.PHY_LE_CODED : "2m".equals(name) ? BluetoothDevice.PHY_LE_2M
+                : BluetoothDevice.PHY_LE_1M;
+    }
+
+    /** One AdvertiseData from the core's normalized map (services and name only where the map has them). */
+    private static AdvertiseData setData(Map<String, Object> d) {
+        AdvertiseData.Builder b = new AdvertiseData.Builder();
+        if (Boolean.TRUE.equals(d.get("includeName"))) b.setIncludeDeviceName(true);
+        if (Boolean.TRUE.equals(d.get("txPowerLevel"))) b.setIncludeTxPowerLevel(true);
+        Object svcs = d.get("services");
+        if (svcs instanceof List) for (Object u : (List<?>) svcs) b.addServiceUuid(ParcelUuid.fromString((String) u));
+        if (d.get("manufacturerId") != null) {
+            b.addManufacturerData((Integer) d.get("manufacturerId"), BleCore.fromHex((String) d.get("manufacturerHex")));
+        }
+        if (d.get("serviceDataUuid") != null) {
+            b.addServiceData(ParcelUuid.fromString((String) d.get("serviceDataUuid")), BleCore.fromHex((String) d.get("serviceDataHex")));
+        }
+        return b.build();
+    }
+
+    static String setStatus(int status) {
+        switch (status) {
+            case AdvertisingSetCallback.ADVERTISE_FAILED_DATA_TOO_LARGE:
+                return "error " + status + " data_too_large";
+            case AdvertisingSetCallback.ADVERTISE_FAILED_TOO_MANY_ADVERTISERS:
+                return "error " + status + " too_many_advertisers";
+            case AdvertisingSetCallback.ADVERTISE_FAILED_ALREADY_STARTED:
+                return "error " + status + " already_started";
+            case AdvertisingSetCallback.ADVERTISE_FAILED_FEATURE_UNSUPPORTED:
+                return "error " + status + " feature_unsupported";
+            default:
+                return "error " + status + " internal_error";
+        }
+    }
+
+    /**
+     * startAdvertisingSet with the core's checked parameters. What the controller lacks (extended
+     * advertising, a PHY, periodic advertising) is a platform limit named from the adapter's own query.
+     */
+    @SuppressWarnings("unchecked")
+    String advertiseSetStart(int epoch, int n, Map<String, Object> p) {
+        if (Build.VERSION.SDK_INT < 26) return SET_LIMIT;
+        BluetoothAdapter a = adapter();
+        if (a == null || !a.isEnabled()) return "unavailable Bluetooth is " + adapterState();
+        BluetoothLeAdvertiser le = a.getBluetoothLeAdvertiser();
+        if (le == null) return "platform_limit this device's Bluetooth controller cannot advertise";
+        boolean legacy = Boolean.TRUE.equals(p.get("legacy"));
+        Object primary = p.get("primaryPhy"), secondary = p.get("secondaryPhy");
+        Map<String, Object> periodic = (Map<String, Object>) p.get("periodic");
+        if (!legacy && !a.isLeExtendedAdvertisingSupported()) {
+            return "platform_limit this device's controller has no LE extended advertising "
+                    + "(BluetoothAdapter.isLeExtendedAdvertisingSupported is false); a set with legacy: true works";
+        }
+        if (("coded".equals(primary) || "coded".equals(secondary)) && !a.isLeCodedPhySupported()) {
+            return "platform_limit this device's controller has no LE Coded PHY (BluetoothAdapter.isLeCodedPhySupported is false)";
+        }
+        if ("2m".equals(secondary) && !a.isLe2MPhySupported()) {
+            return "platform_limit this device's controller has no LE 2M PHY (BluetoothAdapter.isLe2MPhySupported is false)";
+        }
+        if (periodic != null && !a.isLePeriodicAdvertisingSupported()) {
+            return "platform_limit this device's controller has no LE periodic advertising "
+                    + "(BluetoothAdapter.isLePeriodicAdvertisingSupported is false)";
+        }
+        AdvertisingSetParameters params;
+        AdvertiseData data, response = null, periodicData = null;
+        PeriodicAdvertisingParameters periodicParams = null;
+        try {
+            AdvertisingSetParameters.Builder b = new AdvertisingSetParameters.Builder().setLegacyMode(legacy)
+                    .setConnectable(Boolean.TRUE.equals(p.get("connectable"))).setScannable(Boolean.TRUE.equals(p.get("scannable")))
+                    .setAnonymous(Boolean.TRUE.equals(p.get("anonymous"))).setIncludeTxPower(Boolean.TRUE.equals(p.get("includeTxPower")))
+                    .setPrimaryPhy(phy(primary)).setSecondaryPhy(phy(secondary));
+            // Intervals in the platform's units: 0.625 ms for the set, 1.25 ms for periodic advertising.
+            if (p.get("intervalMs") != null) b.setInterval((int) Math.round((Integer) p.get("intervalMs") / 0.625));
+            if (p.get("txPowerDbm") != null) b.setTxPowerLevel((Integer) p.get("txPowerDbm"));
+            params = b.build();
+            data = setData((Map<String, Object>) p.get("data"));
+            if (p.get("response") != null) response = setData((Map<String, Object>) p.get("response"));
+            if (periodic != null) {
+                periodicParams = new PeriodicAdvertisingParameters.Builder()
+                        .setIncludeTxPower(Boolean.TRUE.equals(periodic.get("includeTxPower")))
+                        .setInterval((int) Math.round((Integer) periodic.get("intervalMs") / 1.25)).build();
+                periodicData = setData((Map<String, Object>) periodic.get("data"));
+            }
+        } catch (IllegalArgumentException | IllegalStateException e) {
+            return "bad_value " + e.getMessage();
+        }
+        // The duration in 10 ms units (at most 65535) and the event count are the platform's own limits.
+        int duration = Math.min(65535, ((Integer) p.get("seconds")) * 100);
+        int maxEvents = (Integer) p.get("maxEvents");
+        AdvertisingSetCallback cb = new AdvertisingSetCallback() {
+            @Override
+            public void onAdvertisingSetStarted(AdvertisingSet set, int txPower, int status) {
+                main.post(() -> setStarted(epoch, n, this, txPower, status));
+            }
+
+            @Override
+            public void onAdvertisingEnabled(AdvertisingSet set, boolean enable, int status) {
+                // Disabled without a stop call: its duration or event count ran out.
+                main.post(() -> {
+                    if (!enable) setEnded(epoch, n, this);
+                });
+            }
+
+            @Override
+            public void onAdvertisingSetStopped(AdvertisingSet set) {
+                main.post(() -> setEnded(epoch, n, this));
+            }
+        };
+        try {
+            le.startAdvertisingSet(params, data, response, periodicParams, periodicData, duration, maxEvents, cb);
+        } catch (SecurityException e) {
+            return "permission_denied Bluetooth access was revoked";
+        } catch (IllegalArgumentException e) {
+            return "bad_value " + e.getMessage();
+        } catch (RuntimeException e) {
+            return "advertise_failed " + e.getClass().getSimpleName();
+        }
+        setCallbacks.put(n, cb);
+        return null;
+    }
+
+    private void setStarted(int epoch, int n, AdvertisingSetCallback cb, int txPower, int status) {
+        if (setCallbacks.get(n) != cb) return;
+        boolean ok = status == AdvertisingSetCallback.ADVERTISE_SUCCESS;
+        if (!ok) setCallbacks.remove(n);
+        core.advertiseSetStarted(epoch, n, txPower, ok ? null : setStatus(status));
+    }
+
+    private void setEnded(int epoch, int n, AdvertisingSetCallback cb) {
+        if (setCallbacks.get(n) != cb) return;
+        setCallbacks.remove(n);
+        stopSet(cb);
+        core.advertiseSetStopped(epoch, n);
+    }
+
+    private void stopSet(AdvertisingSetCallback cb) {
+        BluetoothAdapter a = adapter();
+        BluetoothLeAdvertiser le = a == null ? null : a.getBluetoothLeAdvertiser();
+        if (le == null) return;
+        try {
+            le.stopAdvertisingSet(cb);
+        } catch (RuntimeException ignored) {
+            // Bluetooth went off meanwhile: the set ended with it.
+        }
+    }
+
+    void advertiseSetStop(int n) {
+        AdvertisingSetCallback cb = setCallbacks.remove(n);
+        if (cb != null) stopSet(cb);
     }
 
     // ---- keep-alive -----------------------------------------------------------------------------

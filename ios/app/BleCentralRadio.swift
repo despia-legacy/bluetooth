@@ -6,8 +6,9 @@ import Foundation
 /// callbacks into core inputs and does what the core asks through `BleExtension`'s port.
 ///
 /// The manager is created only when a route needs Bluetooth (which can show the permission prompt)
-/// or when iOS relaunched the app to restore it (`restoreBluetoothCentrals`, before launch returns,
-/// as CoreBluetooth requires). Its restore identifier is the one the build declared
+/// or when iOS relaunched the app to restore a session the page started (`restoreBluetoothCentrals`,
+/// before launch returns, as CoreBluetooth requires). It never shows the "Turn On Bluetooth" alert
+/// unless the page's call asked for it (`makeManager(powerAlert:)`). Its restore identifier is the one the build declared
 /// (`claims.bluetooth_centrals: ["main"]`, full form `nativeext.ble.main`).
 ///
 /// Tokens. CoreBluetooth keeps one CBPeripheral per device, so a callback carries no attempt; the
@@ -104,20 +105,39 @@ final class BleCentralRadio: NSObject, @MainActor CBCentralManagerDelegate, @Mai
         }
     }
 
+    /// Creates the manager once. `powerAlert` is CBCentralManagerOptionShowPowerAlertKey, which Apple
+    /// defaults to true ("the system warns the user if the app instantiates the central manager when
+    /// Bluetooth service isn't available"), so it is always passed: the system's "Turn On Bluetooth"
+    /// alert shows only when the page's own call asked for it (`state` with `prompt`), never because the
+    /// manager was created (a route, or a launch that restores an earlier session).
     @discardableResult
-    func makeManager() -> CBCentralManager {
-        if let m = manager { return m }
+    func makeManager(powerAlert: Bool = false) -> CBCentralManager {
+        if let m = manager {
+            if powerAlert { requestPowerAlert() }
+            return m
+        }
         let m = CBCentralManager(delegate: self, queue: nil, options: [
             CBCentralManagerOptionRestoreIdentifierKey: restoreIdentifier,
+            CBCentralManagerOptionShowPowerAlertKey: powerAlert,
         ])
         manager = m
         return m
     }
 
+    /// The options of a manager are fixed when it is created. A page that asks for the alert after the
+    /// manager exists (created without it) with Bluetooth off gets a second, short-lived central that
+    /// carries the key; it is released once the main manager reports the radio on.
+    private var alertProbe: CBCentralManager?
+
+    private func requestPowerAlert() {
+        guard let m = manager, m.state == .poweredOff, alertProbe == nil else { return }
+        alertProbe = CBCentralManager(delegate: nil, queue: nil, options: [CBCentralManagerOptionShowPowerAlertKey: true])
+    }
+
     /// Creates the manager when needed and waits until its state is known (the first update can
     /// follow the permission prompt), or until `deadline`.
-    func ready(until deadline: DispatchTime) async {
-        let m = makeManager()
+    func ready(until deadline: DispatchTime, powerAlert: Bool = false) async {
+        let m = makeManager(powerAlert: powerAlert)
         if m.state != .unknown { return }
         let w = Waiter()
         readyWaiters.append(w)
@@ -139,12 +159,16 @@ final class BleCentralRadio: NSObject, @MainActor CBCentralManagerDelegate, @Mai
 
     // MARK: scan
 
-    func scanStart(_ scan: Int, _ services: [String], _ duplicates: Bool, _ mode: String) -> String? {
-        // `mode` is Android's ScanSettings scan mode; CoreBluetooth has no scan mode to set.
+    func scanStart(_ scan: Int, _ services: [String], _ duplicates: Bool, _ mode: String, _ options: BleObj) -> String? {
+        // `mode` and the Android ScanSettings options have no CoreBluetooth counterpart (the core's
+        // `applied` says so); solicited service UUIDs are CoreBluetooth's own scan option.
         guard let m = manager, m.state == .poweredOn else { return "unavailable Bluetooth is \(stateName)" }
         let ids = services.map { CBUUID(string: $0) }
-        m.scanForPeripherals(withServices: ids.isEmpty ? nil : ids,
-                             options: [CBCentralManagerScanOptionAllowDuplicatesKey: duplicates])
+        var o: [String: Any] = [CBCentralManagerScanOptionAllowDuplicatesKey: duplicates]
+        if let sol = options["solicited"] as? [Any], !sol.isEmpty {
+            o[CBCentralManagerScanOptionSolicitedServiceUUIDsKey] = sol.compactMap { ($0 as? String).map { CBUUID(string: $0) } }
+        }
+        m.scanForPeripherals(withServices: ids.isEmpty ? nil : ids, options: o)
         scanning = scan
         return nil
     }
@@ -201,8 +225,87 @@ final class BleCentralRadio: NSObject, @MainActor CBCentralManagerDelegate, @Mai
         sessions[id] = Session(gen, p)
         // iOS keeps a pending connection without a time limit; the core's connect timer bounds a
         // requested connect, and an automatic reconnect waits for the device.
-        m.connect(p, options: nil)
+        m.connect(p, options: connectOptions[id])
         return nil
+    }
+
+    /// CBConnectPeripheralOption values the page gave on `connect`, by device; kept for the device's
+    /// reconnects too.
+    var connectOptions: [String: [String: Any]] = [:]
+
+    /// The connect options of a `connect` route call; what each one became is in `applied`.
+    func setConnectOptions(_ id: String, _ p: [String: Any]) -> BleObj {
+        var o: [String: Any] = [:]
+        let applied = BleObj()
+        func put(_ name: String, _ key: String) {
+            guard let v = p[name] as? Bool else { return }
+            o[key] = v
+            applied[name] = true
+        }
+        put("notify_on_connection", CBConnectPeripheralOptionNotifyOnConnectionKey)
+        put("notify_on_disconnection", CBConnectPeripheralOptionNotifyOnDisconnectionKey)
+        put("notify_on_notification", CBConnectPeripheralOptionNotifyOnNotificationKey)
+        put("transport_bridging", CBConnectPeripheralOptionEnableTransportBridgingKey)
+        put("requires_ancs", CBConnectPeripheralOptionRequiresANCS)
+        if let v = p["system_reconnect"] as? Bool {
+            if #available(iOS 17.0, *) {
+                o[CBConnectPeripheralOptionEnableAutoReconnect] = v
+                applied["system_reconnect"] = true
+            } else {
+                applied["system_reconnect"] = false
+            }
+        }
+        if !o.isEmpty { connectOptions[id] = o }
+        return applied
+    }
+
+    /// The key of the first discovered characteristic that takes the write, or nil.
+    func writable(_ id: String, _ gen: Int, _ withResponse: Bool) -> String? {
+        guard let s = sessions[id], s.gen == gen, s.connected else { return nil }
+        let want: CBCharacteristicProperties = withResponse ? .write : .writeWithoutResponse
+        for svc in s.peripheral.services ?? [] {
+            for c in svc.characteristics ?? [] where c.properties.contains(want) {
+                return BleCentralRadio.key(s.peripheral, c)
+            }
+        }
+        return nil
+    }
+
+    /// Peripherals the system holds a connection to, from any app, that offer one of `services`
+    /// (retrieveConnectedPeripherals(withServices:)). They become connectable by id.
+    func systemDevices(_ services: [String]) -> [Any]? {
+        guard let m = manager, m.state == .poweredOn else { return nil }
+        return m.retrieveConnectedPeripherals(withServices: services.map { CBUUID(string: $0) }).map { p in
+            known[p.identifier.uuidString] = p
+            return BleCore.obj(("id", p.identifier.uuidString), ("name", BleCore.nul(p.name)),
+                               ("ancsAuthorized", p.ancsAuthorized)).plain as Any
+        }
+    }
+
+    /// registerForConnectionEvents: a `connection_event` whenever a matching peripheral connects to or
+    /// disconnects from the system, from any app.
+    func connectionEvents(_ services: [String], _ ids: [String]) -> String? {
+        guard let m = manager, m.state == .poweredOn else { return "unavailable Bluetooth is \(stateName)" }
+        var o: [CBConnectionEventMatchingOption: Any] = [:]
+        if !services.isEmpty { o[.serviceUUIDs] = services.map { CBUUID(string: $0) } }
+        let uuids = ids.compactMap { UUID(uuidString: $0) }
+        if uuids.count != ids.count { return "bad_value ids must be peripheral identifiers" }
+        if !uuids.isEmpty { o[.peripheralUUIDs] = uuids }
+        m.registerForConnectionEvents(options: o.isEmpty ? nil : o)
+        return nil
+    }
+
+    func centralManager(_ central: CBCentralManager, connectionEventDidOccur event: CBConnectionEvent, for peripheral: CBPeripheral) {
+        dispatchPrecondition(condition: .onQueue(.main))
+        known[peripheral.identifier.uuidString] = peripheral
+        core.external("connection_event", BleCore.obj(("id", peripheral.identifier.uuidString),
+                                                      ("event", event == .peerConnected ? "connected" : "disconnected"),
+                                                      ("name", BleCore.nul(peripheral.name))))
+    }
+
+    func centralManager(_ central: CBCentralManager, didUpdateANCSAuthorizationFor peripheral: CBPeripheral) {
+        dispatchPrecondition(condition: .onQueue(.main))
+        core.external("ancs", BleCore.obj(("id", peripheral.identifier.uuidString), ("authorized", peripheral.ancsAuthorized)))
     }
 
     private func session(_ p: CBPeripheral) -> Session? {
@@ -456,6 +559,7 @@ final class BleCentralRadio: NSObject, @MainActor CBCentralManagerDelegate, @Mai
         }
         core.adapter(BleCentralRadio.name(central.state))
         guard central.state == .poweredOn else { return }
+        alertProbe = nil
         if let services = restoredScan {
             restoredScan = nil
             // The scan iOS kept for this app, handed to the core with no route waiting (call -1).
@@ -519,9 +623,34 @@ final class BleCentralRadio: NSObject, @MainActor CBCentralManagerDelegate, @Mai
 
     func centralManager(_ central: CBCentralManager, didDisconnectPeripheral peripheral: CBPeripheral, error: Error?) {
         dispatchPrecondition(condition: .onQueue(.main))
+        // Where the system also calls the form with `isReconnecting` (below), that call decides: this
+        // one runs a turn later and finds the drop handled (the session gone or replaced). Where only
+        // this form is called, it reports the drop as before.
+        let id = peripheral.identifier.uuidString
         guard let s = session(peripheral) else { return }
-        sessions[peripheral.identifier.uuidString] = nil
-        core.disconnected(peripheral.identifier.uuidString, s.gen, "remote", error: BleCentralRadio.platformError(error))
+        DispatchQueue.main.async { [weak self] in
+            guard let self = self, self.sessions[id] === s else { return }
+            self.dropped(peripheral, reconnecting: false, error: error)
+        }
+    }
+
+    /// Apple: with CBConnectPeripheralOptionEnableAutoReconnect (iOS 17) "The system uses
+    /// centralManager(_:didDisconnectPeripheral:timestamp:isReconnecting:error:) to notify the
+    /// caller about the disconnection", then connects the peripheral itself and calls didConnect.
+    func centralManager(_ central: CBCentralManager, didDisconnectPeripheral peripheral: CBPeripheral,
+                        timestamp: CFAbsoluteTime, isReconnecting: Bool, error: Error?) {
+        dispatchPrecondition(condition: .onQueue(.main))
+        dropped(peripheral, reconnecting: isReconnecting, error: error)
+    }
+
+    /// The link to `peripheral` dropped. `reconnecting`: the system reconnects it; the core opens a
+    /// new attempt (`link` `reconnecting`, reason `system`) whose session the system's didConnect
+    /// completes, so the page sees `connected` again and its subscriptions are restored.
+    private func dropped(_ peripheral: CBPeripheral, reconnecting: Bool, error: Error?) {
+        guard let s = session(peripheral) else { return }
+        let id = peripheral.identifier.uuidString
+        sessions[id] = nil
+        core.disconnected(id, s.gen, "remote", error: BleCentralRadio.platformError(error), reconnecting: reconnecting)
     }
 
     /// CoreBluetooth's error as the page sees it: its domain, code and description, never dropped.
@@ -633,5 +762,33 @@ final class BleCentralRadio: NSObject, @MainActor CBCentralManagerDelegate, @Mai
         dispatchPrecondition(condition: .onQueue(.main))
         guard let s = session(peripheral) else { return }
         core.gattChanged(peripheral.identifier.uuidString, s.gen)
+    }
+
+    // MARK: L2CAP (central role)
+
+    /// Channels being opened, by peripheral id, in order: didOpen answers them one by one.
+    private var l2capOpening: [String: [Int]] = [:]
+    /// Where an opened channel (or the error) goes: the extension adopts it and tells the core.
+    var onL2capOpened: ((Int, CBL2CAPChannel?, String?) -> Void)?
+
+    /// openL2CAPChannel on a connected peripheral; iOS opens a channel only on a link this app holds.
+    func l2capOpen(_ n: Int, _ id: String, _ psm: Int) -> String? {
+        guard let m = manager, m.state == .poweredOn else { return "unavailable Bluetooth is \(stateName)" }
+        guard let s = sessions[id], s.connected else {
+            return "not_connected iOS opens an L2CAP channel on a connected peripheral (CBPeripheral.openL2CAPChannel): connect first"
+        }
+        l2capOpening[id, default: []].append(n)
+        s.peripheral.openL2CAPChannel(CBL2CAPPSM(psm))
+        return nil
+    }
+
+    func peripheral(_ peripheral: CBPeripheral, didOpen channel: CBL2CAPChannel?, error: Error?) {
+        dispatchPrecondition(condition: .onQueue(.main))
+        let id = peripheral.identifier.uuidString
+        guard var q = l2capOpening[id], !q.isEmpty else { return }
+        let n = q.removeFirst()
+        l2capOpening[id] = q.isEmpty ? nil : q
+        let code = error.map { "error \(($0 as NSError).domain) \(($0 as NSError).code)" } ?? (channel == nil ? "no channel" : nil)
+        onL2capOpened?(n, code == nil ? channel : nil, code)
     }
 }

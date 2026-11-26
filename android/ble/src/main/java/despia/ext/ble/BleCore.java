@@ -29,8 +29,12 @@ public final class BleCore {
 
     /** What the core asks of the platform side. Implemented by the radio adapter and by test fakes. */
     public interface Port {
-        /** Start a scan. Returns null when the platform accepted it, else "code message". */
-        String scanStart(int scan, List<String> services, boolean duplicates, String mode);
+        /**
+         * Start a scan. {@code options}: the scan options the page gave beyond services, duplicates and
+         * mode (keys as {@link #SCAN_OPTION_KEYS}); the radio applies what its platform offers.
+         * Returns null when the platform accepted it, else "code message".
+         */
+        String scanStart(int scan, List<String> services, boolean duplicates, String mode, Map<String, Object> options);
 
         void scanStop(int scan);
 
@@ -49,6 +53,12 @@ public final class BleCore {
          * the platform accepted it, else "code message" (the step settles at once).
          */
         String op(String id, int gen, int op, String kind, String key, String descriptor, byte[] data, int arg);
+
+        /**
+         * The key of the first discovered characteristic of link {@code gen} that takes a write with
+         * response ({@code withResponse}) or without one; null when none (the {@code raw} route).
+         */
+        String writable(String id, int gen, boolean withResponse);
 
         void timer(String kind, int token, long ms);
 
@@ -90,6 +100,56 @@ public final class BleCore {
 
         /** iOS: write the server snapshot (null: delete the file). */
         void persist(Map<String, Object> snapshot);
+
+        /**
+         * Answer the central's request {@code request} (a read or write of a characteristic with flag
+         * a) with an ATT outcome ({@link #ATT_STATUSES}), the offset and, for a read, the value. null when
+         * handed over, else "code message".
+         */
+        String attRespond(int epoch, int request, String status, int offset, byte[] data);
+
+        /** Publish an L2CAP channel as token {@code t}. null when accepted (l2capPublished follows). */
+        String l2capPublish(int epoch, int t, boolean encrypted);
+
+        void l2capUnpublish(int psm);
+
+        /** Open channel {@code channel} to {@code id} on {@code psm}. null when accepted (l2capOpened follows). */
+        String l2capOpen(int epoch, int channel, String id, int psm, boolean encrypted);
+
+        /** Queue bytes on an open channel. null when accepted, else "code message". */
+        String l2capSend(int channel, byte[] data);
+
+        /** Close a channel or abandon its opening; no callback follows. */
+        void l2capClose(int channel);
+
+        /** Android: start advertising set {@code set}. null when accepted (advertiseSetStarted follows). */
+        String advertiseSetStart(int epoch, int set, Map<String, Object> params);
+
+        void advertiseSetStop(int set);
+
+        // Android restoration: a scan the system keeps for the app when its process is gone, and the
+        // companion device presence of devices the app associated (the iOS core asks only for the
+        // associate family: AccessorySetupKit; it never asks for a wake scan or presence).
+
+        /** Start the PendingIntent scan with these filters and mode. null when accepted, else "code message". */
+        String wakeStart(Map<String, Object> filters, String mode);
+
+        void wakeStop();
+
+        /** Keep the running wake scan's filters across processes (null: none runs). */
+        void wakeSave(Map<String, Object> filters);
+
+        /** Show the system's companion device chooser as request {@code request}. null when shown (associated follows). */
+        String associate(int request, Map<String, Object> params);
+
+        /** The app's associations as records, or "code message". */
+        Object associations();
+
+        /** Remove association {@code association}. null when removed, else "code message". */
+        String disassociate(int association);
+
+        /** Start or stop observing the presence of association {@code association}. null when accepted, else "code message". */
+        String presence(boolean start, int association);
     }
 
     public static final int WRITE_MAX = 512;
@@ -125,6 +185,14 @@ public final class BleCore {
     public int dropped;
     final List<Map<String, Object>> pendingValues = new ArrayList<>();
     boolean flushScheduled;
+    /** The disk-durable journal: the last seq handed out, records written since the last rewrite. */
+    int persistedSeq, persistedSinceRewrite;
+    /** The journal of the previous app process, read back from disk at launch. */
+    String previousRun;
+    List<Map<String, Object>> previousRecords = new ArrayList<>();
+    int previousDropped;
+    /** The last port refusal of a connect no call owned: code and message. */
+    String[] lastRefusal = {"connect_failed", ""};
 
     static final class Link {
         final String id;
@@ -134,6 +202,14 @@ public final class BleCore {
         boolean background;
         int mtu = 23;
         int connectCall = -1;
+        /**
+         * A page {@code connect} with {@code seconds} 0: the attempt waits for the device without a time
+         * limit (the route answered at once with {@code connecting}).
+         */
+        boolean unbounded;
+        /** The system reconnects this link itself (the platform reported the drop with
+         *  {@code reconnecting}). */
+        boolean system;
         /** The token of the timer bounding an attempt no fresh connect started (restored or adopted). */
         int pendingTimer;
         boolean closed;
@@ -159,6 +235,8 @@ public final class BleCore {
         int arg;
         int chunk, chunks;
         boolean internal;
+        /** The {@code raw} route: the reply names the characteristic the radio chose. */
+        boolean raw;
 
         Op(int call, String kind) {
             this.call = call;
@@ -315,8 +393,41 @@ public final class BleCore {
 
     /** Exactly one of hex and b64 decoded; null when none, both, or malformed. */
     public static byte[] bytes(String hex, String b64) {
-        if ((hex == null) == (b64 == null)) return null;
+        return bytes(hex, b64, null);
+    }
+
+    /** Exactly one of hex, b64 and text (UTF-8) decoded; null when none, more than one, or malformed. */
+    public static byte[] bytes(String hex, String b64, String text) {
+        int given = (hex != null ? 1 : 0) + (b64 != null ? 1 : 0) + (text != null ? 1 : 0);
+        if (given != 1) return null;
+        if (text != null) return text.getBytes(java.nio.charset.StandardCharsets.UTF_8);
         return hex != null ? fromHex(hex) : fromB64(b64);
+    }
+
+    /**
+     * Comma-separated names (each 1 to 248 UTF-8 bytes, the GAP name limit), at most 10; empty when
+     * missing; null when malformed.
+     */
+    public static List<String> nameList(String s) {
+        List<String> out = new ArrayList<>();
+        if (s == null || s.isEmpty()) return out;
+        for (String n : s.split(",", -1)) {
+            int len = n.getBytes(java.nio.charset.StandardCharsets.UTF_8).length;
+            if (len == 0 || len > 248) return null;
+            if (!out.contains(n)) out.add(n);
+        }
+        return out.size() > 10 ? null : out;
+    }
+
+    /** PHY names of the {@code phy} route (1m, 2m, coded), comma-separated; null when malformed or empty. */
+    public static List<String> phyList(String s) {
+        if (s == null || s.isEmpty()) return null;
+        List<String> out = new ArrayList<>();
+        for (String p : s.split(",", -1)) {
+            if (!"1m".equals(p) && !"2m".equals(p) && !"coded".equals(p)) return null;
+            if (!out.contains(p)) out.add(p);
+        }
+        return out;
     }
 
     /** The characteristic key used in replies, records and subscriptions. */
@@ -447,10 +558,19 @@ public final class BleCore {
 
     // ---- Android permissions (the Swift twin has no counterpart: iOS has one authorization) --
 
-    /** Install-time and runtime permissions a role needs on an API level; {install, runtime}. */
+    public static final String BACKGROUND_LOCATION = "android.permission.ACCESS_BACKGROUND_LOCATION";
+
+    /**
+     * Install-time and runtime permissions a role needs on an API level; {install, runtime}. The role
+     * {@code wake} (wake_start) is a scan that runs while the app has no process: on Android 10 and 11
+     * (API 29 and 30) it also needs ACCESS_BACKGROUND_LOCATION (Android, "Bluetooth permissions": "If your
+     * app supports a service and can run on Android 10 (API level 29) or Android 11, you must also declare
+     * the ACCESS_BACKGROUND_LOCATION permission to discover Bluetooth devices", read 2026-11-26).
+     */
     public static List<List<String>> permissions(int sdk, String role, boolean neverForLocation) {
         List<String> install = new ArrayList<>(), runtime = new ArrayList<>();
-        boolean scan = "scan".equals(role) || "central".equals(role);
+        boolean wake = "wake".equals(role);
+        boolean scan = "scan".equals(role) || "central".equals(role) || wake;
         boolean connect = "connect".equals(role) || "central".equals(role) || "advertise".equals(role);
         boolean advertise = "advertise".equals(role);
         if (sdk >= 31) {
@@ -464,6 +584,7 @@ public final class BleCore {
             install.add("android.permission.BLUETOOTH");
             if (scan || advertise) install.add("android.permission.BLUETOOTH_ADMIN");
             if (scan) runtime.add("android.permission.ACCESS_FINE_LOCATION");
+            if (wake && (sdk == 29 || sdk == 30)) runtime.add(BACKGROUND_LOCATION);
         }
         List<List<String>> out = new ArrayList<>();
         out.add(install);
@@ -500,6 +621,43 @@ public final class BleCore {
         }
     }
 
+    private static Map<String, Object> journalRecord(Map<String, Object> r) {
+        return obj("seq", r.get("seq"), "t", r.get("t"), "event", r.get("event"), "data", r.get("data"));
+    }
+
+    /**
+     * The disk-durable journal, asked by the extension on its own timer after events: the records
+     * ({seq, t, event, data}) to append to this run's file since the last call, or, once the file holds
+     * twice the window's record count, the whole window to replace it with ({@code rewrite}), so the
+     * file stays bounded. Null when there is nothing new. Element 0: the records; element 1: rewrite.
+     */
+    public Object[] journalToPersist() {
+        List<Map<String, Object>> out = new ArrayList<>();
+        boolean rewrite = false;
+        if (persistedSinceRewrite >= JOURNAL_RECORDS * 2) {
+            rewrite = true;
+            for (Map<String, Object> r : journal) out.add(journalRecord(r));
+            persistedSinceRewrite = out.size();
+        } else {
+            for (Map<String, Object> r : journal) {
+                if ((Integer) r.get("seq") > persistedSeq) out.add(journalRecord(r));
+            }
+            persistedSinceRewrite += out.size();
+        }
+        if (!journal.isEmpty()) persistedSeq = (Integer) journal.peekLast().get("seq");
+        return out.isEmpty() && !rewrite ? null : new Object[]{out, rewrite};
+    }
+
+    /**
+     * Launch: the previous process's journal as its file held it (records {seq, t, event, data},
+     * oldest first). Only the newest JOURNAL_RECORDS are kept; {@code events} with {@code run} reads them.
+     */
+    public void loadPrevious(String run, List<Map<String, Object>> records) {
+        previousRun = run;
+        previousDropped = Math.max(0, records.size() - JOURNAL_RECORDS);
+        previousRecords = new ArrayList<>(records.subList(previousDropped, records.size()));
+    }
+
     /** An event that is also a journal record. */
     private void record(String event, Map<String, Object> data) {
         append(event, data);
@@ -532,6 +690,13 @@ public final class BleCore {
             pendingRequests.subList(0, n).clear();
             port.emit("request", obj("records", batch, "dropped", dropped));
             if (!pendingRequests.isEmpty()) scheduleFlush();
+        }
+        if (!pendingL2cap.isEmpty()) {
+            int n = Math.min(BATCH_MAX, pendingL2cap.size());
+            List<Object> batch = new ArrayList<>(pendingL2cap.subList(0, n));
+            pendingL2cap.subList(0, n).clear();
+            port.emit("l2cap_data", obj("records", batch, "dropped", dropped));
+            if (!pendingL2cap.isEmpty()) scheduleFlush();
         }
     }
 
@@ -583,16 +748,67 @@ public final class BleCore {
     /** Fields of the state reply that the core owns. */
     public Map<String, Object> stateFields() {
         return obj("scanning", scan != 0, "advertising", advertising, "links", links.size(), "centrals", centrals.size(),
-                "keepAlive", keepAliveWanted, "epoch", epoch, "run", run);
+                "keepAlive", keepAliveWanted, "epoch", epoch, "run", run, "previousRun", previousRun);
     }
 
     // ---- scan -----------------------------------------------------------------------------------
 
+    /** The scan options passed through to the radio, by route parameter name. */
+    public static final List<String> SCAN_OPTION_KEYS =
+            java.util.Arrays.asList("legacy", "phy", "report_delay", "callback_type", "match", "matches", "solicited");
+
+    /** The scan's own filters, applied here on every platform: advertised names, and a manufacturer id with a data prefix. */
+    List<String> scanNames = new ArrayList<>();
+    int scanManufacturer = -1;
+    byte[] scanManufacturerPrefix = new byte[0];
+
+    /**
+     * What this platform applies of the given scan options: Android's ScanSettings (legacy, phy,
+     * report_delay, callback, match, matches); iOS's solicited service UUIDs. Names and the
+     * manufacturer filter are the core's own, so they apply on both.
+     */
+    Map<String, Object> scanApplied(Map<String, Object> options, boolean names, boolean manufacturer) {
+        Map<String, Object> out = obj();
+        if (names) out.put("names", true);
+        if (manufacturer) out.put("manufacturer", true);
+        for (String k : options.keySet()) out.put(k, "solicited".equals(k) ? !android : android);
+        return out;
+    }
+
     public void scanStart(int call, String servicesCsv, int seconds, boolean duplicates, String mode, boolean background) {
+        scanStart(call, servicesCsv, seconds, duplicates, mode, background, null, -1, null, obj());
+    }
+
+    public void scanStart(int call, String servicesCsv, int seconds, boolean duplicates, String mode, boolean background,
+                          String namesCsv, int manufacturerId, String manufacturerHex, Map<String, Object> options) {
         List<String> services = uuidList(servicesCsv);
         if (services == null) {
             fail(call, "bad_value", "services must be up to 20 UUIDs");
             return;
+        }
+        List<String> names = nameList(namesCsv);
+        if (names == null) {
+            fail(call, "bad_value", "names must be up to 10 comma-separated names of 1 to 248 bytes");
+            return;
+        }
+        byte[] prefix = manufacturerHex == null ? null : fromHex(manufacturerHex);
+        if (manufacturerId > 0xFFFF || (manufacturerHex != null && (prefix == null || manufacturerId < 0))) {
+            fail(call, "bad_value", "manufacturer_id is 0 to 65535; manufacturer_hex is hex bytes and needs manufacturer_id");
+            return;
+        }
+        for (String k : options.keySet()) {
+            if (!SCAN_OPTION_KEYS.contains(k)) {
+                fail(call, "bad_value", "unknown scan option " + k + "; the options are " + String.join(", ", SCAN_OPTION_KEYS));
+                return;
+            }
+        }
+        if (options.get("solicited") instanceof String) {
+            List<String> list = uuidList((String) options.get("solicited"));
+            if (list == null) {
+                fail(call, "bad_value", "solicited must be up to 20 UUIDs");
+                return;
+            }
+            options.put("solicited", new ArrayList<Object>(list));
         }
         if (!on()) {
             fail(call, "unavailable", "Bluetooth is " + adapter);
@@ -607,7 +823,11 @@ public final class BleCore {
             return;
         }
         int s = ++nextScan;
-        String err = port.scanStart(s, services, duplicates, mode);
+        // Set before the port call: the radio builds its platform filters from them.
+        scanNames = names;
+        scanManufacturer = manufacturerId;
+        scanManufacturerPrefix = prefix == null ? new byte[0] : prefix;
+        String err = port.scanStart(s, services, duplicates, mode, options);
         if (err != null) {
             refused(call, err);
             return;
@@ -617,7 +837,31 @@ public final class BleCore {
         devices.clear();
         filtered = !services.isEmpty();
         if (seconds > 0) port.timer("scan", s, seconds * 1000L);
-        ok(call, obj("scan", s));
+        ok(call, obj("scan", s, "applied", scanApplied(options, !names.isEmpty(), manufacturerId >= 0)));
+    }
+
+    /** Whether an advertisement passes the scan's own name and manufacturer filters. */
+    private boolean matches(Map<String, Object> adv) {
+        if (!scanNames.isEmpty()) {
+            Object n = adv.get("name");
+            if (!(n instanceof String) || !scanNames.contains(n)) return false;
+        }
+        if (scanManufacturer >= 0) {
+            Object list = adv.get("manufacturer");
+            if (!(list instanceof List)) return false;
+            for (Object m : (List<?>) list) {
+                if (!(m instanceof Map)) continue;
+                Map<?, ?> o = (Map<?, ?>) m;
+                if (!(o.get("id") instanceof Integer) || (Integer) o.get("id") != scanManufacturer) continue;
+                byte[] b = o.get("hex") instanceof String ? fromHex((String) o.get("hex")) : null;
+                if (b == null || b.length < scanManufacturerPrefix.length) continue;
+                boolean same = true;
+                for (int i = 0; i < scanManufacturerPrefix.length; i++) same &= b[i] == scanManufacturerPrefix[i];
+                if (same) return true;
+            }
+            return false;
+        }
+        return true;
     }
 
     boolean filtered;
@@ -646,6 +890,7 @@ public final class BleCore {
             stale("device scan " + s);
             return;
         }
+        if (!matches(adv)) return;
         Map<String, Object> d = devices.get(id);
         if (d == null) {
             if (devices.size() >= DEVICES_MAX) return;
@@ -709,10 +954,29 @@ public final class BleCore {
         return true;
     }
 
+    /**
+     * {@code seconds} 0: the attempt waits for the device without a time limit (iOS keeps a pending
+     * connection, Android connects with autoConnect); the route answers at once with
+     * {@code connecting} and the {@code link} event reports the connection.
+     */
     public void connect(int call, String id, boolean auto, int seconds) {
         if (!checkId(call, id)) return;
         if (!on()) {
             fail(call, "unavailable", "Bluetooth is " + adapter);
+            return;
+        }
+        if (seconds == 0) {
+            if (links.containsKey(id) || closing.containsKey(id)) {
+                fail(call, "busy", "this device is linked, connecting or closing");
+                return;
+            }
+            startLink(id, auto, -1, 0, true, new LinkedHashSet<>(), true);
+            Link l = links.get(id);
+            if (l == null) {
+                fail(call, lastRefusal[0], lastRefusal[1]);
+                return;
+            }
+            ok(call, obj("id", id, "link", l.gen, "state", "connecting", "mtu", l.mtu));
             return;
         }
         Link pending = links.get(id);
@@ -723,6 +987,7 @@ public final class BleCore {
                 pending.connectCall = call;
                 pending.auto = auto;
                 pending.background = false;
+                pending.unbounded = false;
                 boundPending(pending, seconds * 1000);
                 return;
             }
@@ -744,9 +1009,21 @@ public final class BleCore {
     }
 
     private void startLink(String id, boolean auto, int call, int seconds, boolean background, Set<String> wanted) {
+        startLink(id, auto, call, seconds, background, wanted, false);
+    }
+
+    private void startLink(String id, boolean auto, int call, int seconds, boolean background, Set<String> wanted,
+                           boolean unbounded) {
+        startLink(id, auto, call, seconds, background, wanted, unbounded, false);
+    }
+
+    private void startLink(String id, boolean auto, int call, int seconds, boolean background, Set<String> wanted,
+                           boolean unbounded, boolean system) {
         Link l = new Link(id, ++nextGen);
         l.auto = auto;
         l.background = background;
+        l.unbounded = unbounded;
+        l.system = system;
         l.connectCall = call;
         l.wanted.addAll(wanted);
         links.put(id, l);
@@ -754,11 +1031,17 @@ public final class BleCore {
         if (err != null) {
             links.remove(id);
             l.closed = true;
+            int sp = err.indexOf(' ');
+            lastRefusal = new String[]{sp < 0 ? err : err.substring(0, sp), sp < 0 ? "" : err.substring(sp + 1)};
             refused(call, err);
             return;
         }
         if (call >= 0) port.timer("connect", l.gen, seconds * 1000L);
-        if (background) record("link", obj("id", id, "link", l.gen, "state", "reconnecting", "reason", "auto"));
+        if (unbounded) {
+            record("link", obj("id", id, "link", l.gen, "state", "connecting", "reason", "requested"));
+        } else if (background) {
+            record("link", obj("id", id, "link", l.gen, "state", "reconnecting", "reason", system ? "system" : "auto"));
+        }
         updateHold();
     }
 
@@ -840,9 +1123,16 @@ public final class BleCore {
     /** {@code error}: the platform's own error, when it gave one ({domain, code, message}); it
      *  reaches the failed connect call's message and the {@code link} record unchanged. */
     public void disconnected(String id, int gen, String reason, Map<String, Object> error) {
+        disconnected(id, gen, reason, error, false);
+    }
+
+    /** {@code reconnecting}: the platform is reconnecting the device itself (iOS 17
+     *  {@code isReconnecting}); the link closes as any drop does and a new attempt waits for that
+     *  reconnect, as an {@code auto} link's would, without making the link {@code auto}. */
+    public void disconnected(String id, int gen, String reason, Map<String, Object> error, boolean reconnecting) {
         Link l = links.get(id);
         if (current(l, gen)) {
-            closeLink(l, errorReason(error, reason), true, error);
+            closeLink(l, errorReason(error, reason), true, error, reconnecting);
             return;
         }
         Closing c = closing.get(id);
@@ -879,6 +1169,10 @@ public final class BleCore {
     }
 
     boolean closeLink(Link l, String reason, boolean down, Map<String, Object> error) {
+        return closeLink(l, reason, down, error, false);
+    }
+
+    boolean closeLink(Link l, String reason, boolean down, Map<String, Object> error, boolean systemReconnect) {
         if (l.closed) return true;
         l.closed = true;
         List<Op> ops = new ArrayList<>();
@@ -912,13 +1206,13 @@ public final class BleCore {
         Map<String, Object> rec = obj("id", l.id, "link", l.gen, "state", "disconnected", "reason", reason);
         if (error != null) rec.put("error", error);
         record("link", rec);
-        if (l.auto && !"requested".equals(reason) && on()) {
+        if ((l.auto || systemReconnect) && !"requested".equals(reason) && on()) {
             Closing c = closing.get(l.id);
             if (c != null) {
                 c.reconnect = true;
                 c.wanted = new LinkedHashSet<>(l.wanted);
             } else {
-                startLink(l.id, true, -1, 0, true, l.wanted);
+                startLink(l.id, l.auto, -1, 0, true, l.wanted, false, systemReconnect && !l.auto);
             }
         }
         updateHold();
@@ -1010,19 +1304,17 @@ public final class BleCore {
 
     public void write(int call, String id, String service, int sn, String chr, int cn, String descriptor,
                       String hexValue, String b64Value, boolean response) {
+        write(call, id, service, sn, chr, cn, descriptor, hexValue, b64Value, response, null);
+    }
+
+    public void write(int call, String id, String service, int sn, String chr, int cn, String descriptor,
+                      String hexValue, String b64Value, boolean response, String text) {
         Link l = connectedLink(call, id);
         if (l == null) return;
         String k = target(call, service, sn, chr, cn);
         if (k == null) return;
-        byte[] data = bytes(hexValue, b64Value);
-        if (data == null) {
-            fail(call, "bad_value", "give exactly one of hex and b64, well formed");
-            return;
-        }
-        if (data.length > WRITE_MAX) {
-            fail(call, "too_long", data.length + " bytes; at most " + WRITE_MAX);
-            return;
-        }
+        byte[] data = writeData(call, hexValue, b64Value, text);
+        if (data == null) return;
         String d = null;
         if (descriptor != null) {
             d = uuid(descriptor);
@@ -1037,6 +1329,97 @@ public final class BleCore {
         o.descriptor = d;
         o.data = data;
         enqueue(call, l, o);
+    }
+
+    /** The bytes of a write (exactly one of hex, b64 and text), or null after failing the call. */
+    private byte[] writeData(int call, String hexValue, String b64Value, String text) {
+        byte[] data = bytes(hexValue, b64Value, text);
+        if (data == null) {
+            fail(call, "bad_value", "give exactly one of hex, b64 and text, well formed");
+            return null;
+        }
+        if (data.length > WRITE_MAX) {
+            fail(call, "too_long", data.length + " bytes; at most " + WRITE_MAX);
+            return null;
+        }
+        return data;
+    }
+
+    /**
+     * The {@code raw} route: bytes to the first discovered characteristic that takes the write (with
+     * response by default). The reply names the characteristic.
+     */
+    public void raw(int call, String id, String hexValue, String b64Value, String text, boolean response) {
+        Link l = connectedLink(call, id);
+        if (l == null) return;
+        byte[] data = writeData(call, hexValue, b64Value, text);
+        if (data == null) return;
+        String k = port.writable(l.id, l.gen, response);
+        if (k == null) {
+            fail(call, "not_found", "no discovered characteristic takes a write " + (response ? "with" : "without")
+                    + " response (run discover first)");
+            return;
+        }
+        Op o = new Op(call, response ? "write" : "wnr");
+        o.key = k;
+        o.data = data;
+        o.raw = true;
+        enqueue(call, l, o);
+    }
+
+    /** Android requestConnectionPriority: {@code level} balanced, high, low_power or dck. */
+    public void priority(int call, String id, String level) {
+        Link l = connectedLink(call, id);
+        if (l == null) return;
+        if (!android) {
+            fail(call, "platform_limit", "iOS has no API to request a connection priority or interval; the system and the peripheral set it");
+            return;
+        }
+        Op o = new Op(call, "priority");
+        o.key = level;
+        enqueue(call, l, o);
+    }
+
+    /** Android setPreferredPhy (tx and rx given, {@code coded} none, s2 or s8) or readPhy (neither given). */
+    public void phy(int call, String id, String tx, String rx, String coded) {
+        Link l = connectedLink(call, id);
+        if (l == null) return;
+        if (!android) {
+            fail(call, "platform_limit", "iOS has no API to read or set the LE PHY; the system chooses it");
+            return;
+        }
+        if (tx == null && rx == null) {
+            enqueue(call, l, new Op(call, "phy_read"));
+            return;
+        }
+        List<String> t = phyList(tx != null ? tx : rx), r = phyList(rx != null ? rx : tx);
+        if (t == null || r == null) {
+            fail(call, "bad_value", "tx and rx are comma-separated PHYs: 1m, 2m, coded");
+            return;
+        }
+        Op o = new Op(call, "phy_set");
+        o.key = String.join(",", t) + "/" + String.join(",", r) + "/" + coded;
+        enqueue(call, l, o);
+    }
+
+    /** The link's PHY changed (Android onPhyUpdate). It completes a phy_set in flight; otherwise it is a {@code phy} event. */
+    public void phyChanged(String id, int gen, String tx, String rx, String code) {
+        Link l = live(id, gen, "phy");
+        if (l == null) return;
+        Op o = l.inFlight;
+        if (o != null && "phy_set".equals(o.kind)) {
+            l.inFlight = null;
+            settle(l, o, code == null ? null : "gatt_error", code == null ? null : "the PHY update failed: " + code,
+                    obj("tx", tx, "rx", rx));
+            pump(l);
+            return;
+        }
+        if (code == null) record("phy", obj("id", id, "link", gen, "tx", tx, "rx", rx));
+    }
+
+    /** An event the extension produces outside the core's state (bond changes, for one): kept in the journal like every event. */
+    public void external(String event, Map<String, Object> data) {
+        record(event, data);
     }
 
     public void subscribe(int call, String id, String service, int sn, String chr, int cn, boolean on) {
@@ -1117,7 +1500,7 @@ public final class BleCore {
     }
 
     private void ready(Link l) {
-        record("link", obj("id", l.id, "link", l.gen, "state", "connected", "reason", l.background ? "auto" : "requested",
+        record("link", obj("id", l.id, "link", l.gen, "state", "connected", "reason", l.system ? "system" : l.background && !l.unbounded ? "auto" : "requested",
                 "resubscribed", l.resubscribed, "failed", l.failed));
         if (l.connectCall >= 0) {
             ok(l.connectCall, obj("id", l.id, "link", l.gen, "state", "connected", "mtu", l.mtu));
@@ -1165,11 +1548,16 @@ public final class BleCore {
         }
         switch (o.kind) {
             case "write":
-                ok(o.call, obj("written", o.data.length, "chunks", 1));
+            case "wnr": {
+                Map<String, Object> r = obj("written", o.data.length, "chunks", "wnr".equals(o.kind) ? o.chunks : 1);
+                if (o.raw && o.key != null) {
+                    String[] p = o.key.split("[#/]");
+                    r.putAll(obj("service", p[0], "char", p[2], "service_n", Integer.parseInt(p[1]),
+                            "char_n", Integer.parseInt(p[3]), "response", "write".equals(o.kind)));
+                }
+                ok(o.call, r);
                 break;
-            case "wnr":
-                ok(o.call, obj("written", o.data.length, "chunks", o.chunks));
-                break;
+            }
             case "sub": {
                 String mode = data != null && data.get("mode") != null ? (String) data.get("mode") : "notify";
                 l.subs.put(o.key, mode);
@@ -1337,7 +1725,8 @@ public final class BleCore {
      * The {@code chars} grammar of service_add: characteristics separated by commas, each
      * {@code uuid~flags} or {@code uuid~flags~hex}. Flags r (read), w (write), c (write without
      * response), n (notify), i (indicate), R (read needs encryption, with r), W (write needs
-     * encryption, with w or c). At most 16; equal UUIDs are numbered in order. Null when malformed.
+     * encryption, with w or c), a (the page answers its reads and writes: att_request and respond,
+     * with r, w or c). At most 16; equal UUIDs are numbered in order. Null when malformed.
      */
     public static List<Map<String, Object>> parseChars(String spec) {
         List<Map<String, Object>> out = new ArrayList<>();
@@ -1351,13 +1740,14 @@ public final class BleCore {
             if (u == null || flags.isEmpty()) return null;
             for (int i = 0; i < flags.length(); i++) {
                 char c = flags.charAt(i);
-                if ("rwcniRW".indexOf(c) < 0 || flags.indexOf(c) != i) return null;
+                if ("rwcniRWa".indexOf(c) < 0 || flags.indexOf(c) != i) return null;
             }
             boolean any = false;
             for (char c : new char[]{'r', 'w', 'c', 'n', 'i'}) any |= flags.indexOf(c) >= 0;
             if (!any) return null;
             if (flags.indexOf('R') >= 0 && flags.indexOf('r') < 0) return null;
             if (flags.indexOf('W') >= 0 && flags.indexOf('w') < 0 && flags.indexOf('c') < 0) return null;
+            if (flags.indexOf('a') >= 0 && flags.indexOf('r') < 0 && flags.indexOf('w') < 0 && flags.indexOf('c') < 0) return null;
             String start = null;
             if (f.length == 3) {
                 byte[] b = fromHex(f[2]);
@@ -1554,14 +1944,18 @@ public final class BleCore {
     }
 
     public void valueSet(int call, String service, String chrUuid, int cn, String hexValue, String b64Value) {
+        valueSet(call, service, chrUuid, cn, hexValue, b64Value, null);
+    }
+
+    public void valueSet(int call, String service, String chrUuid, int cn, String hexValue, String b64Value, String text) {
         Chr c = chr(service, chrUuid, cn);
         if (c == null) {
             fail(call, "not_found", "no such characteristic in the table");
             return;
         }
-        byte[] data = bytes(hexValue, b64Value);
+        byte[] data = bytes(hexValue, b64Value, text);
         if (data == null) {
-            fail(call, "bad_value", "give exactly one of hex and b64, well formed");
+            fail(call, "bad_value", "give exactly one of hex, b64 and text, well formed");
             return;
         }
         if (overMax(call, data)) return;
@@ -1578,14 +1972,19 @@ public final class BleCore {
     }
 
     public void notify(int call, String service, String chrUuid, int cn, String hexValue, String b64Value, String central) {
+        notify(call, service, chrUuid, cn, hexValue, b64Value, central, null);
+    }
+
+    public void notify(int call, String service, String chrUuid, int cn, String hexValue, String b64Value, String central,
+                       String text) {
         Chr c = chr(service, chrUuid, cn);
         if (c == null) {
             fail(call, "not_found", "no such characteristic in the table");
             return;
         }
-        byte[] data = bytes(hexValue, b64Value);
+        byte[] data = bytes(hexValue, b64Value, text);
         if (data == null) {
-            fail(call, "bad_value", "give exactly one of hex and b64, well formed");
+            fail(call, "bad_value", "give exactly one of hex, b64 and text, well formed");
             return;
         }
         if (overMax(call, data)) return;
@@ -1721,6 +2120,7 @@ public final class BleCore {
     private void endCentral(String central, String reason) {
         for (Service s : services.values()) for (Chr c : s.chars) c.subscribers.remove(central);
         prepared.keySet().removeIf(k -> k.startsWith(central + "|"));
+        dropRequests(central, reason);
         centrals.remove(central);
         record("central", obj("central", central, "state", "disconnected", "reason", reason));
         updateHold();
@@ -1768,13 +2168,23 @@ public final class BleCore {
         return mode == null ? "0000" : "indicate".equals(mode) ? "0200" : "0100";
     }
 
-    /** A read request, answered from the value store: {status, hex}. Status ok, not_found, not_permitted, invalid_offset, unlikely or stale. */
+    /**
+     * A read request, answered from the value store: {status, hex}. Status ok, not_found, not_permitted,
+     * invalid_offset, unlikely or stale; for a characteristic with flag a, pending and the request
+     * number: the page answers it with respond (or the core answers unlikely after ATT_ANSWER_MS).
+     */
     public Map<String, Object> readRequest(int e, String central, int mtu, String key, int offset) {
         if (!serverCurrent(e, "read_request")) return obj("status", "stale");
         Chr c = chrOf(key);
         if (c == null) return obj("status", "not_found");
         seen(central, mtu);
         if (!c.has('r')) return obj("status", "not_permitted");
+        if (c.has('a')) {
+            String[] p = key.split("[#/]");
+            Map<String, Object> view = obj("kind", "read", "central", central, "service", p[0], "char", p[2],
+                    "char_n", Integer.parseInt(p[3]), "offset", offset);
+            return obj("status", "pending", "request", openRequest(e, central, "read", offset, view, new LinkedHashMap<>()));
+        }
         if (c.value == null) return obj("status", "unlikely");
         if (offset > c.value.length) return obj("status", "invalid_offset");
         return obj("status", "ok", "hex", hex(java.util.Arrays.copyOfRange(c.value, offset, c.value.length)));
@@ -1783,12 +2193,16 @@ public final class BleCore {
     /**
      * Write requests of one central, applied all or none (iOS delivers a batch and answers it once;
      * Android passes one). Each is {key, offset, hex}. {@code prepare}: an Android prepared write,
-     * buffered until executeWrite. Returns ok, not_found, not_permitted, invalid_offset,
-     * invalid_length or stale.
+     * buffered until executeWrite. A request may carry {@code response: false} (Android
+     * responseNeeded false). Returns ok, not_found, not_permitted, invalid_offset, invalid_length or
+     * stale; when the batch writes a characteristic with flag a and wants a response, "pending N":
+     * the page answers request N with respond, for the whole batch.
      */
     public String writeRequests(int e, String central, int mtu, List<Map<String, Object>> reqs, boolean prepare) {
         if (!serverCurrent(e, "write_request")) return "stale";
         Map<String, byte[]> next = new LinkedHashMap<>();
+        List<Object> asked = new ArrayList<>();
+        boolean response = true;
         for (Map<String, Object> r : reqs) {
             String key = (String) r.get("key");
             Chr c = chrOf(key);
@@ -1796,6 +2210,13 @@ public final class BleCore {
             if (!c.has('w') && !c.has('c')) return "not_permitted";
             byte[] data = fromHex((String) r.get("hex"));
             if (data == null) return "invalid_length";
+            if (Boolean.FALSE.equals(r.get("response"))) response = false;
+            if (c.has('a') && !prepare) {
+                int offset = (Integer) r.get("offset");
+                if (offset + data.length > WRITE_MAX) return "invalid_length";
+                asked.add(writeView(key, offset, data));
+                continue;
+            }
             String slot = prepare ? central + "|" + key : key;
             byte[] base = next.containsKey(slot) ? next.get(slot)
                     : prepare ? prepared.getOrDefault(slot, new byte[0]) : c.value == null ? new byte[0] : c.value;
@@ -1807,6 +2228,15 @@ public final class BleCore {
             next.put(slot, v);
         }
         seen(central, mtu);
+        if (!asked.isEmpty()) {
+            Map<String, Object> view = obj("kind", "write", "central", central, "writes", asked);
+            if (response) return "pending " + openRequest(e, central, "write", 0, view, next);
+            // No answer travels back to the central: the page gets the write, and nothing waits.
+            Map<String, Object> rec = obj("request", null, "state", "unanswered");
+            rec.putAll(view);
+            rec.put("mtu", centrals.get(central));
+            record("att_request", rec);
+        }
         for (Map.Entry<String, byte[]> x : next.entrySet()) {
             if (prepare) prepared.put(x.getKey(), x.getValue());
             else commit(central, x.getKey(), x.getValue());
@@ -1814,15 +2244,128 @@ public final class BleCore {
         return "ok";
     }
 
-    /** Android onExecuteWrite: commit (true) or drop this central's prepared writes. */
+    /**
+     * Android onExecuteWrite: commit (true) or drop this central's prepared writes. When a prepared
+     * characteristic has flag a, "pending N": the page answers the assembled values with respond.
+     */
     public String executeWrite(int e, String central, boolean execute) {
         if (!serverCurrent(e, "execute_write")) return "stale";
+        List<Object> asked = new ArrayList<>();
+        Map<String, byte[]> commits = new LinkedHashMap<>();
         for (String slot : new ArrayList<>(prepared.keySet())) {
             if (!slot.startsWith(central + "|")) continue;
             byte[] v = prepared.remove(slot);
-            if (execute) commit(central, slot.substring(central.length() + 1), v);
+            if (!execute) continue;
+            String key = slot.substring(central.length() + 1);
+            Chr c = chrOf(key);
+            if (c != null && c.has('a')) asked.add(writeView(key, 0, v));
+            else commits.put(key, v);
         }
+        if (!asked.isEmpty()) {
+            return "pending " + openRequest(e, central, "write", 0, obj("kind", "write", "central", central, "writes", asked),
+                    commits);
+        }
+        for (Map.Entry<String, byte[]> x : commits.entrySet()) commit(central, x.getKey(), x.getValue());
         return "ok";
+    }
+
+    // ---- page-answered requests (characteristics with flag a) ------------------------------------
+
+    /**
+     * How long a request waits for the page: under ATT's 30 s transaction timeout (Bluetooth Core
+     * 5.4, Vol 3, Part F, 3.3.3), after which the central drops the link; the core answers unlikely first.
+     */
+    public static final long ATT_ANSWER_MS = 25_000;
+    /** The ATT outcomes respond takes; each radio maps them to its platform's codes. */
+    public static final List<String> ATT_STATUSES = java.util.Arrays.asList("ok", "not_permitted", "invalid_offset",
+            "invalid_length", "insufficient_authentication", "insufficient_authorization", "insufficient_encryption",
+            "not_supported", "insufficient_resources", "unlikely");
+
+    static final class Req {
+        final int id, epoch, offset;
+        final String central, kind;
+        /** Writes in the same batch to characteristics without flag a: committed when the page answers ok. */
+        final Map<String, byte[]> commits;
+
+        Req(int id, int epoch, String central, String kind, int offset, Map<String, byte[]> commits) {
+            this.id = id;
+            this.epoch = epoch;
+            this.central = central;
+            this.kind = kind;
+            this.offset = offset;
+            this.commits = commits;
+        }
+    }
+
+    final Map<Integer, Req> requests = new LinkedHashMap<>();
+    int nextReq;
+
+    private static Map<String, Object> writeView(String key, int offset, byte[] data) {
+        String[] p = key.split("[#/]");
+        return obj("service", p[0], "char", p[2], "char_n", Integer.parseInt(p[3]), "offset", offset, "hex", hex(data));
+    }
+
+    private int openRequest(int e, String central, String kind, int offset, Map<String, Object> view, Map<String, byte[]> commits) {
+        int id = ++nextReq;
+        requests.put(id, new Req(id, e, central, kind, offset, commits));
+        Map<String, Object> rec = obj("request", id, "state", "open");
+        rec.putAll(view);
+        rec.put("mtu", centrals.get(central));
+        record("att_request", rec);
+        port.timer("att", id, ATT_ANSWER_MS);
+        return id;
+    }
+
+    /**
+     * respond: the page's answer to request {@code request}. {@code status} null means ok; a read
+     * answered ok carries exactly one of hex, b64 and text (the value from the request's offset);
+     * {@code offset} below 0 means the request's own.
+     */
+    public void respond(int call, int request, String status, String hexValue, String b64Value, String text, int offset) {
+        Req q = requests.get(request);
+        if (q == null) {
+            fail(call, "not_found", "no open request " + request + ": it was answered, it expired or its central left");
+            return;
+        }
+        String st = status == null ? "ok" : status;
+        if (!ATT_STATUSES.contains(st)) {
+            fail(call, "bad_value", "status must be one of " + String.join(", ", ATT_STATUSES));
+            return;
+        }
+        byte[] data = null;
+        if ("read".equals(q.kind) && "ok".equals(st)) {
+            data = bytes(hexValue, b64Value, text);
+            if (data == null) {
+                fail(call, "bad_value", "a read answered ok carries exactly one of hex, b64 and text, well formed");
+                return;
+            }
+            if (WRITE_MAX < data.length) {
+                fail(call, "too_long", data.length + " bytes; at most " + WRITE_MAX);
+                return;
+            }
+        } else if (hexValue != null || b64Value != null || text != null) {
+            fail(call, "bad_value", "only a read answered ok carries a value");
+            return;
+        }
+        requests.remove(request);
+        String err = port.attRespond(q.epoch, request, st, offset < 0 ? q.offset : offset, data);
+        if (err != null) {
+            refused(call, err);
+            return;
+        }
+        if ("ok".equals(st)) for (Map.Entry<String, byte[]> x : q.commits.entrySet()) commit(q.central, x.getKey(), x.getValue());
+        record("att_request", obj("request", request, "state", "answered", "status", st));
+        ok(call, obj("request", request, "status", st, "bytes", data == null ? 0 : data.length));
+    }
+
+    /** The open requests of {@code central} end without an answer: the central left (or the adapter went off). */
+    private void dropRequests(String central, String reason) {
+        for (Iterator<Req> it = requests.values().iterator(); it.hasNext(); ) {
+            Req q = it.next();
+            if (!central.equals(q.central)) continue;
+            it.remove();
+            record("att_request", obj("request", q.id, "state", "dropped", "reason", reason));
+        }
     }
 
     private void commit(String central, String key, byte[] v) {
@@ -1867,6 +2410,17 @@ public final class BleCore {
 
     public void advertiseStart(int call, String servicesCsv, String name, int manufacturerId, String manufacturerHex,
                                String serviceDataUuid, String serviceDataHex, boolean connectable, String mode, int seconds) {
+        advertiseStart(call, servicesCsv, name, manufacturerId, manufacturerHex, serviceDataUuid, serviceDataHex, connectable,
+                mode, seconds, null, null);
+    }
+
+    /**
+     * {@code txPower} (ultra_low, low, medium, high) and {@code includeTxPower}: Android's
+     * AdvertiseSettings tx power level and AdvertiseData tx power field, kept only when given.
+     */
+    public void advertiseStart(int call, String servicesCsv, String name, int manufacturerId, String manufacturerHex,
+                               String serviceDataUuid, String serviceDataHex, boolean connectable, String mode, int seconds,
+                               String txPower, Boolean includeTxPower) {
         List<String> uuids = uuidList(servicesCsv);
         if (uuids == null) {
             fail(call, "bad_value", "services must be up to 20 UUIDs");
@@ -1899,6 +2453,8 @@ public final class BleCore {
         p.put("connectable", connectable);
         p.put("mode", mode);
         p.put("seconds", seconds);
+        if (txPower != null) p.put("txPower", txPower);
+        if (includeTxPower != null) p.put("includeTxPower", includeTxPower);
         advWanted = p;
         advUntil = 0;
         advCall = call;
@@ -1929,6 +2485,8 @@ public final class BleCore {
         a.put("serviceData", android && p.get("serviceDataUuid") != null);
         a.put("connectable", android ? p.get("connectable") : Boolean.TRUE);
         a.put("mode", android ? p.get("mode") : null);
+        if (p.get("txPower") != null) a.put("txPower", android ? p.get("txPower") : null);
+        if (p.get("includeTxPower") != null) a.put("includeTxPower", android && Boolean.TRUE.equals(p.get("includeTxPower")));
         return a;
     }
 
@@ -1979,6 +2537,736 @@ public final class BleCore {
         ok(call, obj("advertising", false));
     }
 
+    // ---- L2CAP connection-oriented channels -------------------------------------------------------
+
+    /** Bytes in one l2cap_send: the bridge carries a string of at most 4096 characters (hex 2048 bytes). */
+    public static final int L2CAP_SEND_MAX = 2048;
+    static final String L2CAP_PSM = "psm must be an LE PSM, 1 to 255 (Bluetooth Core 5.4, Vol 3, Part A, 4.22)";
+
+    static final class Channel {
+        final int n, psm;
+        final String role, peer;
+        String state;
+        int call = -1;
+
+        Channel(int n, String role, String peer, int psm, String state) {
+            this.n = n;
+            this.role = role;
+            this.peer = peer;
+            this.psm = psm;
+            this.state = state;
+        }
+    }
+
+    final Map<Integer, Channel> channels = new LinkedHashMap<>();
+    /** Publishes in flight, by token: {call, encrypted}. */
+    final Map<Integer, Object[]> publishing = new LinkedHashMap<>();
+    /** Published PSMs and whether each needs encryption. */
+    final Map<Integer, Boolean> published = new LinkedHashMap<>();
+    final List<Map<String, Object>> pendingL2cap = new ArrayList<>();
+    int nextChannel, nextPublish;
+
+    private Map<String, Object> channelView(Channel ch) {
+        return obj("channel", ch.n, "state", ch.state, "role", ch.role, "peer", ch.peer, "psm", ch.psm);
+    }
+
+    /** l2cap_publish: the peripheral role's listening channel; the platform picks the PSM. */
+    public void l2capPublish(int call, boolean encrypted) {
+        if (!on()) {
+            fail(call, "unavailable", "Bluetooth is " + adapter);
+            return;
+        }
+        int t = ++nextPublish;
+        String err = port.l2capPublish(epoch, t, encrypted);
+        if (err != null) {
+            refused(call, err);
+            return;
+        }
+        publishing.put(t, new Object[]{call, encrypted});
+        port.timer("l2cap_publish", t, OP_MS);
+    }
+
+    public void l2capPublished(int e, int t, int psm, String code) {
+        if (!serverCurrent(e, "l2cap_published")) return;
+        Object[] p = publishing.remove(t);
+        if (p == null) {
+            stale("l2cap_published " + t);
+            return;
+        }
+        int call = (Integer) p[0];
+        boolean encrypted = (Boolean) p[1];
+        if (code != null) {
+            fail(call, "l2cap_failed", "the platform did not publish the channel: " + code);
+            return;
+        }
+        if (call >= 0 && !port.isActive(call)) {
+            port.l2capUnpublish(psm);
+            fail(call, "timeout", "the channel was published after the route timed out");
+            return;
+        }
+        published.put(psm, encrypted);
+        ok(call, obj("psm", psm, "encrypted", encrypted));
+    }
+
+    public void l2capUnpublish(int call, int psm) {
+        if (!published.containsKey(psm)) {
+            fail(call, "not_found", "no published channel on psm " + psm);
+            return;
+        }
+        published.remove(psm);
+        port.l2capUnpublish(psm);
+        ok(call, obj("psm", psm, "published", false));
+    }
+
+    /** A central opened a channel to a published PSM. Returns the channel number, or -1 (the radio closes it). */
+    public int l2capIncoming(int e, int psm, String peer) {
+        if (!serverCurrent(e, "l2cap_incoming")) return -1;
+        if (!published.containsKey(psm)) {
+            stale("l2cap_incoming psm " + psm);
+            return -1;
+        }
+        Channel ch = new Channel(++nextChannel, "peripheral", peer, psm, "open");
+        channels.put(ch.n, ch);
+        record("l2cap", channelView(ch));
+        updateHold();
+        return ch.n;
+    }
+
+    /** l2cap_open: the central role's channel to {@code id} on {@code psm}, within {@code seconds}. */
+    public void l2capOpen(int call, String id, int psm, boolean encrypted, int seconds) {
+        if (!isId(id, android ? "android" : "ios")) {
+            fail(call, "bad_value", "id must be a device id from a scan or a link");
+            return;
+        }
+        if (psm < 1 || psm > 255) {
+            fail(call, "bad_value", L2CAP_PSM);
+            return;
+        }
+        if (!on()) {
+            fail(call, "unavailable", "Bluetooth is " + adapter);
+            return;
+        }
+        Channel ch = new Channel(++nextChannel, "central", id, psm, "opening");
+        String err = port.l2capOpen(epoch, ch.n, id, psm, encrypted);
+        if (err != null) {
+            refused(call, err);
+            return;
+        }
+        ch.call = call;
+        channels.put(ch.n, ch);
+        port.timer("l2cap_open", ch.n, (seconds > 0 ? seconds : 10) * 1000L);
+    }
+
+    public void l2capOpened(int e, int n, String code) {
+        if (!serverCurrent(e, "l2cap_opened")) return;
+        Channel ch = channels.get(n);
+        if (ch == null || !"opening".equals(ch.state)) {
+            stale("l2cap_opened " + n);
+            return;
+        }
+        int call = ch.call;
+        ch.call = -1;
+        if (code != null) {
+            channels.remove(n);
+            fail(call, "l2cap_failed", "the channel did not open: " + code);
+            return;
+        }
+        if (call >= 0 && !port.isActive(call)) {
+            channels.remove(n);
+            port.l2capClose(n);
+            fail(call, "timeout", "the channel opened after the route timed out");
+            return;
+        }
+        ch.state = "open";
+        record("l2cap", channelView(ch));
+        updateHold();
+        ok(call, obj("channel", n, "psm", ch.psm, "id", ch.peer));
+    }
+
+    public void l2capSend(int call, int n, String hexValue, String b64Value, String text) {
+        Channel ch = channels.get(n);
+        if (ch == null) {
+            fail(call, "not_found", "no channel " + n);
+            return;
+        }
+        if (!"open".equals(ch.state)) {
+            fail(call, "not_connected", "channel " + n + " is not open yet");
+            return;
+        }
+        byte[] data = bytes(hexValue, b64Value, text);
+        if (data == null || data.length == 0) {
+            fail(call, "bad_value", "give exactly one of hex, b64 and text, well formed and not empty");
+            return;
+        }
+        if (data.length > L2CAP_SEND_MAX) {
+            fail(call, "too_long", data.length + " bytes; at most " + L2CAP_SEND_MAX + " per call");
+            return;
+        }
+        String err = port.l2capSend(n, data);
+        if (err != null) {
+            refused(call, err);
+            return;
+        }
+        ok(call, obj("channel", n, "bytes", data.length));
+    }
+
+    /** Bytes arrived on channel {@code n}: one l2cap_data record, batched like values. */
+    public void l2capData(int n, String hexValue) {
+        Channel ch = channels.get(n);
+        if (ch == null || !"open".equals(ch.state)) {
+            stale("l2cap_data " + n);
+            return;
+        }
+        Map<String, Object> rec = obj("channel", n, "hex", hexValue);
+        append("l2cap_data", rec);
+        Map<String, Object> view = obj("seq", nextSeq, "t", journal.peekLast().get("t"));
+        view.putAll(rec);
+        pendingL2cap.add(view);
+        scheduleFlush();
+    }
+
+    /** The platform closed channel {@code n} (the peer, or an error {@code code}). */
+    public void l2capClosed(int n, String code) {
+        Channel ch = channels.remove(n);
+        if (ch == null) {
+            stale("l2cap_closed " + n);
+            return;
+        }
+        if ("opening".equals(ch.state)) {
+            fail(ch.call, "l2cap_failed", "the channel closed before it opened" + (code == null ? "" : ": " + code));
+            return;
+        }
+        ch.state = "closed";
+        Map<String, Object> rec = channelView(ch);
+        rec.put("reason", code == null ? "remote" : "error");
+        if (code != null) rec.put("error", code);
+        record("l2cap", rec);
+        updateHold();
+    }
+
+    public void l2capClose(int call, int n) {
+        Channel ch = channels.remove(n);
+        if (ch == null) {
+            fail(call, "not_found", "no channel " + n);
+            return;
+        }
+        port.l2capClose(n);
+        if ("opening".equals(ch.state)) {
+            fail(ch.call, "l2cap_failed", "l2cap_close came before the channel opened");
+        } else {
+            ch.state = "closed";
+            Map<String, Object> rec = channelView(ch);
+            rec.put("reason", "requested");
+            record("l2cap", rec);
+        }
+        updateHold();
+        ok(call, obj("channel", n, "state", "closed"));
+    }
+
+    public void l2capChannels(int call) {
+        List<Object> list = new ArrayList<>();
+        for (Channel ch : channels.values()) list.add(channelView(ch));
+        List<Object> psms = new ArrayList<>();
+        for (Map.Entry<Integer, Boolean> x : published.entrySet()) psms.add(obj("psm", x.getKey(), "encrypted", x.getValue()));
+        ok(call, obj("channels", list, "published", psms));
+    }
+
+    private int openChannels() {
+        int k = 0;
+        for (Channel ch : channels.values()) if ("open".equals(ch.state)) k++;
+        return k;
+    }
+
+    // ---- extended advertising sets (Android) ------------------------------------------------------
+
+    static final String ADV_SET_LIMIT = "iOS advertises one legacy advertisement: CBPeripheralManager.startAdvertising "
+            + "takes only a local name and service UUIDs; extended and periodic advertising sets are not in its API";
+
+    static final class AdvSet {
+        final int n;
+        int call;
+        boolean on;
+
+        AdvSet(int n, int call) {
+            this.n = n;
+            this.call = call;
+        }
+    }
+
+    final Map<Integer, AdvSet> sets = new LinkedHashMap<>();
+    int nextSet;
+
+    private static Object given(Map<String, Object> raw, String k, Object dflt) {
+        Object v = raw.get(k);
+        return v == null ? dflt : v;
+    }
+
+    /** The manufacturer and service data pairs of one AdvertiseData under {@code prefix}; a String is the error. */
+    private static Object adData(Map<String, Object> raw, String prefix, boolean withName) {
+        Map<String, Object> d = obj();
+        if (withName) {
+            List<String> uuids = uuidList((String) raw.get(prefix + "services"));
+            if (uuids == null) return prefix + "services must be up to 20 UUIDs";
+            d.put("services", new ArrayList<Object>(uuids));
+            d.put("includeName", given(raw, prefix + "include_name", false));
+        }
+        Object mid = raw.get(prefix + "manufacturer_id");
+        String mhex = (String) raw.get(prefix + "manufacturer_hex");
+        if ((mid == null) != (mhex == null) || (mid != null && ((Integer) mid < 0 || (Integer) mid > 0xFFFF))
+                || (mhex != null && fromHex(mhex) == null)) {
+            return prefix + "manufacturer_id (0 to 65535) and " + prefix + "manufacturer_hex go together, as an id and hex bytes";
+        }
+        d.put("manufacturerId", mid);
+        d.put("manufacturerHex", mhex == null ? null : mhex.toLowerCase(Locale.ROOT));
+        String su = (String) raw.get(prefix + "service_data_uuid"), shex = (String) raw.get(prefix + "service_data_hex");
+        String sdUuid = su == null ? null : uuid(su);
+        if ((su == null) != (shex == null) || (su != null && sdUuid == null) || (shex != null && fromHex(shex) == null)) {
+            return prefix + "service_data_uuid and " + prefix + "service_data_hex go together, as a UUID and hex bytes";
+        }
+        d.put("serviceDataUuid", sdUuid);
+        d.put("serviceDataHex", shex == null ? null : shex.toLowerCase(Locale.ROOT));
+        return d;
+    }
+
+    /**
+     * The advertise_set_start parameters, checked by the rules of Android's AdvertisingSetParameters
+     * and the Core specification; a String is the error, else the parameters for the radio.
+     */
+    @SuppressWarnings("unchecked")
+    static Object advertiseSetParams(Map<String, Object> raw) {
+        boolean legacy = (Boolean) given(raw, "legacy", false);
+        boolean connectable = (Boolean) given(raw, "connectable", false);
+        boolean scannable = (Boolean) given(raw, "scannable", false);
+        boolean anonymous = (Boolean) given(raw, "anonymous", false);
+        boolean includeTxPower = (Boolean) given(raw, "include_tx_power", false);
+        String primary = (String) given(raw, "primary_phy", "1m"), secondary = (String) given(raw, "secondary_phy", "1m");
+        if (legacy) {
+            if (anonymous) return "a legacy advertisement cannot be anonymous";
+            if (connectable && !scannable) return "a legacy advertisement cannot be connectable and not scannable";
+            if (includeTxPower) return "a legacy advertisement cannot carry the TX power in its header";
+            if (!"1m".equals(primary) || !"1m".equals(secondary)) return "a legacy advertisement uses the 1M PHY";
+        } else {
+            if (connectable && scannable) return "an extended advertisement cannot be both connectable and scannable";
+            if (anonymous && connectable) return "an extended advertisement cannot be both connectable and anonymous";
+        }
+        boolean periodic = raw.get("periodic_interval_ms") != null;
+        if (periodic && (legacy || connectable || scannable)) {
+            return "periodic advertising needs an extended set that is neither connectable nor scannable";
+        }
+        if (!periodic && (raw.get("periodic_include_tx_power") != null || raw.get("periodic_manufacturer_id") != null
+                || raw.get("periodic_manufacturer_hex") != null || raw.get("periodic_service_data_uuid") != null
+                || raw.get("periodic_service_data_hex") != null)) {
+            return "periodic data needs periodic_interval_ms";
+        }
+        boolean response = raw.get("response_services") != null || raw.get("response_include_name") != null
+                || raw.get("response_manufacturer_id") != null || raw.get("response_manufacturer_hex") != null;
+        if (response && !scannable) return "a scan response needs a scannable set";
+        Object data = adData(raw, "", true);
+        if (data instanceof String) return data;
+        Map<String, Object> p = obj("legacy", legacy, "connectable", connectable, "scannable", scannable, "anonymous", anonymous,
+                "includeTxPower", includeTxPower, "primaryPhy", primary, "secondaryPhy", secondary);
+        p.put("intervalMs", raw.get("interval_ms"));
+        p.put("txPowerDbm", raw.get("tx_power_dbm"));
+        p.put("data", data);
+        ((Map<String, Object>) data).put("txPowerLevel", given(raw, "tx_power_data", false));
+        if (response) {
+            Object r = adData(raw, "response_", true);
+            if (r instanceof String) return r;
+            p.put("response", r);
+        } else {
+            p.put("response", null);
+        }
+        if (periodic) {
+            Object d = adData(raw, "periodic_", false);
+            if (d instanceof String) return d;
+            p.put("periodic", obj("intervalMs", raw.get("periodic_interval_ms"),
+                    "includeTxPower", given(raw, "periodic_include_tx_power", false), "data", d));
+        } else {
+            p.put("periodic", null);
+        }
+        p.put("seconds", given(raw, "seconds", 0));
+        p.put("maxEvents", given(raw, "max_events", 0));
+        return p;
+    }
+
+    @SuppressWarnings("unchecked")
+    public void advertiseSetStart(int call, Map<String, Object> raw) {
+        if (!android) {
+            fail(call, "platform_limit", ADV_SET_LIMIT);
+            return;
+        }
+        Object p = advertiseSetParams(raw);
+        if (p instanceof String) {
+            fail(call, "bad_value", (String) p);
+            return;
+        }
+        if (!on()) {
+            fail(call, "unavailable", "Bluetooth is " + adapter);
+            return;
+        }
+        AdvSet a = new AdvSet(++nextSet, call);
+        String err = port.advertiseSetStart(epoch, a.n, (Map<String, Object>) p);
+        if (err != null) {
+            refused(call, err);
+            return;
+        }
+        sets.put(a.n, a);
+        port.timer("advertise_set", a.n, OP_MS);
+    }
+
+    /** The platform started set {@code n} (code null, with its TX power in dBm) or refused it. */
+    public void advertiseSetStarted(int e, int n, int txPower, String code) {
+        if (!serverCurrent(e, "advertise_set_started")) return;
+        AdvSet a = sets.get(n);
+        if (a == null || a.on) {
+            stale("advertise_set_started " + n);
+            return;
+        }
+        int call = a.call;
+        a.call = -1;
+        if (code != null) {
+            sets.remove(n);
+            fail(call, "advertise_failed", code);
+            return;
+        }
+        if (call >= 0 && !port.isActive(call)) {
+            sets.remove(n);
+            port.advertiseSetStop(n);
+            fail(call, "timeout", "the set started after the route timed out");
+            return;
+        }
+        a.on = true;
+        record("advertising_set", obj("set", n, "state", "started", "tx_power", txPower));
+        updateHold();
+        ok(call, obj("set", n, "tx_power", txPower));
+    }
+
+    /** The platform ended set {@code n} by itself (its duration or event count ran out). */
+    public void advertiseSetStopped(int e, int n) {
+        if (!serverCurrent(e, "advertise_set_stopped")) return;
+        AdvSet a = sets.get(n);
+        if (a == null || !a.on) {
+            stale("advertise_set_stopped " + n);
+            return;
+        }
+        sets.remove(n);
+        record("advertising_set", obj("set", n, "state", "stopped", "reason", "elapsed"));
+        updateHold();
+    }
+
+    public void advertiseSetStop(int call, int n) {
+        AdvSet a = sets.remove(n);
+        if (a == null) {
+            fail(call, "not_found", "no advertising set " + n);
+            return;
+        }
+        port.advertiseSetStop(n);
+        if (!a.on) {
+            fail(a.call, "advertise_failed", "advertise_set_stop came before the platform started the set");
+        } else {
+            record("advertising_set", obj("set", n, "state", "stopped", "reason", "requested"));
+        }
+        updateHold();
+        ok(call, obj("set", n, "state", "stopped"));
+    }
+
+    private int setsOn() {
+        int k = 0;
+        for (AdvSet a : sets.values()) if (a.on) k++;
+        return k;
+    }
+
+    // ---- Android restoration: wake scan and companion device presence -------------------------------
+
+    static final String WAKE_LIMIT = "iOS has no scan that outlives the app: a scan_start with services continues in the "
+            + "background and is restored after a relaunch (CBCentralManager state restoration)";
+    static final String PRESENCE_LIMIT = "iOS has no API to observe a device's presence; a connect with no time limit "
+            + "completes when the device comes in range, and state restoration relaunches the app for it";
+    static final String MIGRATE_ANDROID = "migrate is AccessorySetupKit's migration of a device the app already uses; Android has no such step, "
+            + "a device the app already connects to needs none";
+    static final String ASSOCIATE_COMPANY_NEEDS_MORE = "a filter by manufacturer_id alone is not enough for the iOS accessory picker: add name or "
+            + "manufacturer_hex (Apple, Discovering and configuring accessories)";
+    static final String ASSOCIATE_IOS_ADDRESS = "iOS gives an app no Bluetooth address (AccessorySetupKit answers a "
+            + "Bluetooth identifier); filter by services and name";
+
+    /** The running wake scan's filters (kept on disk by the port), or null. */
+    Map<String, Object> wake;
+    /** The open associate request's call, or -1. */
+    int associateCall = -1;
+    int nextAssociate;
+    final Set<Integer> observing = new LinkedHashSet<>();
+
+    /** Launch: the wake scan a previous process started is still the system's (a PendingIntent scan outlives the process). */
+    public void loadWake(Map<String, Object> filters) {
+        wake = filters;
+    }
+
+    public boolean waking() {
+        return wake != null;
+    }
+
+    /** Launch: the presence observations a previous process started stay the system's. */
+    public void loadObserving(List<Integer> list) {
+        observing.clear();
+        if (list != null) observing.addAll(list);
+    }
+
+    public List<Integer> observingList() {
+        return new ArrayList<>(observing);
+    }
+
+    public void wakeStart(int call, String servicesCsv, String namesCsv, int manufacturerId, String manufacturerHex, String mode) {
+        if (!android) {
+            fail(call, "platform_limit", WAKE_LIMIT);
+            return;
+        }
+        List<String> services = uuidList(servicesCsv);
+        if (services == null) {
+            fail(call, "bad_value", "services must be up to 20 UUIDs");
+            return;
+        }
+        List<String> names = nameList(namesCsv);
+        if (names == null) {
+            fail(call, "bad_value", "names must be up to 10 comma-separated names of 1 to 248 bytes");
+            return;
+        }
+        byte[] prefix = manufacturerHex == null ? null : fromHex(manufacturerHex);
+        if (manufacturerId > 0xFFFF || (manufacturerHex != null && (prefix == null || manufacturerId < 0))) {
+            fail(call, "bad_value", "manufacturer_id is 0 to 65535; manufacturer_hex is hex bytes and needs manufacturer_id");
+            return;
+        }
+        if (services.isEmpty() && names.isEmpty() && manufacturerId < 0) {
+            fail(call, "filter_required", "a wake scan needs a service, name or manufacturer filter");
+            return;
+        }
+        if (!on()) {
+            fail(call, "unavailable", "Bluetooth is " + adapter);
+            return;
+        }
+        if (wake != null) {
+            fail(call, "busy", "a wake scan is already running; wake_stop ends it");
+            return;
+        }
+        Map<String, Object> f = obj("services", new ArrayList<Object>(services), "names", new ArrayList<Object>(names));
+        if (manufacturerId >= 0) {
+            f.put("manufacturer_id", manufacturerId);
+            f.put("manufacturer_hex", prefix == null ? "" : hex(prefix));
+        }
+        String m = mode == null ? "low_power" : mode;
+        f.put("mode", m);
+        String err = port.wakeStart(f, m);
+        if (err != null) {
+            refused(call, err);
+            return;
+        }
+        wake = f;
+        port.wakeSave(f);
+        record("wake", obj("state", "started", "filters", f));
+        ok(call, obj("state", "started", "filters", f));
+    }
+
+    public void wakeStop(int call) {
+        if (!android) {
+            fail(call, "platform_limit", WAKE_LIMIT);
+            return;
+        }
+        if (wake == null) {
+            ok(call, obj("state", "stopped", "stopped", false));
+            return;
+        }
+        port.wakeStop();
+        wake = null;
+        port.wakeSave(null);
+        record("wake", obj("state", "stopped", "reason", "requested"));
+        ok(call, obj("state", "stopped", "stopped", true));
+    }
+
+    /**
+     * The system delivered the wake scan's PendingIntent: {@code devices} (records with id and the
+     * advertisement fields) or {@code error} (a ScanCallback SCAN_FAILED code, which ends the scan).
+     */
+    public void wakeDelivered(List<Map<String, Object>> devices, int error) {
+        if (wake == null) {
+            stale("wake delivery");
+            return;
+        }
+        if (error > 0) {
+            port.wakeStop();
+            wake = null;
+            port.wakeSave(null);
+            record("wake", obj("state", "failed", "error", error));
+            return;
+        }
+        List<Object> list = new ArrayList<>();
+        for (Map<String, Object> d : devices) {
+            if (list.size() >= DEVICES_MAX) break;
+            list.add(d);
+        }
+        if (!list.isEmpty()) record("wake", obj("state", "results", "devices", list));
+    }
+
+    public void associate(int call, Map<String, Object> raw) {
+        List<String> services = uuidList((String) raw.get("services"));
+        if (services == null || services.size() > 1) {
+            fail(call, "bad_value", "services is one service UUID");
+            return;
+        }
+        // The manufacturer filter, as on scan_start and wake_start: an id (a Bluetooth company identifier), and
+        // optionally hex bytes the advertised manufacturer data starts with.
+        int manufacturerId = -1;
+        if (raw.get("manufacturer_id") != null) {
+            manufacturerId = raw.get("manufacturer_id") instanceof Number ? ((Number) raw.get("manufacturer_id")).intValue() : -2;
+        }
+        String manufacturerHex = raw.get("manufacturer_hex") instanceof String ? (String) raw.get("manufacturer_hex") : null;
+        byte[] prefix = manufacturerHex == null ? null : fromHex(manufacturerHex);
+        if (manufacturerId < -1 || manufacturerId > 0xFFFF || (manufacturerHex != null && (prefix == null || manufacturerId < 0))) {
+            fail(call, "bad_value", "manufacturer_id is 0 to 65535; manufacturer_hex is hex bytes and needs manufacturer_id");
+            return;
+        }
+        Object name = raw.get("name");
+        String migrate = null;
+        if (raw.get("migrate") != null) {
+            if (android) {
+                fail(call, "platform_limit", MIGRATE_ANDROID);
+                return;
+            }
+            Object m = raw.get("migrate");
+            if (!(m instanceof String) || !((String) m).matches("[0-9A-Fa-f]{8}(-[0-9A-Fa-f]{4}){3}-[0-9A-Fa-f]{12}")) {
+                fail(call, "bad_value", "migrate is the id of a device the app already uses, a UUID");
+                return;
+            }
+            migrate = ((String) m).toUpperCase(java.util.Locale.ROOT);
+        }
+        // AccessorySetupKit filters by a service UUID or a company identifier (Apple, ASDiscoveryDescriptor:
+        // "Provide at least one UUID or manufacturer ID to filter"), and its accessory has no address. Apple's
+        // "Discovering and configuring accessories": a descriptor with a company identifier needs one more
+        // accessory identifier (a name, or manufacturer data), or the app crashes.
+        if (!android) {
+            if (services.isEmpty() && manufacturerId < 0) {
+                fail(call, "bad_value", "services is one service UUID or manufacturer_id is a company identifier: the iOS accessory picker filters by one of them");
+                return;
+            }
+            if (services.isEmpty() && prefix == null && (!(name instanceof String) || ((String) name).isEmpty())) {
+                fail(call, "bad_value", ASSOCIATE_COMPANY_NEEDS_MORE);
+                return;
+            }
+            if (raw.get("address") != null) {
+                fail(call, "bad_value", ASSOCIATE_IOS_ADDRESS);
+                return;
+            }
+        }
+        Object address = raw.get("address");
+        if (address != null && !(address instanceof String && ((String) address).matches("[0-9A-F]{2}(:[0-9A-F]{2}){5}"))) {
+            fail(call, "bad_value", "address is a Bluetooth address like 00:11:22:AA:BB:CC");
+            return;
+        }
+        if (associateCall >= 0 && port.isActive(associateCall)) {
+            fail(call, "busy", "the device chooser is already open");
+            return;
+        }
+        Map<String, Object> p = obj("services", new ArrayList<Object>(services), "name", name, "address", address,
+                "single", !Boolean.FALSE.equals(raw.get("single")),
+                "manufacturerId", manufacturerId < 0 ? null : (Object) manufacturerId,
+                "manufacturerHex", prefix == null ? null : hex(prefix),
+                "migrate", migrate);
+        int r = ++nextAssociate;
+        String err = port.associate(r, p);
+        if (err != null) {
+            refused(call, err);
+            return;
+        }
+        associateCall = call;
+        assocRequest = r;
+    }
+
+    int assocRequest;
+
+    /** The chooser of request {@code r} ended: {@code info} (association, address, name) or the refusal "code message". */
+    public void associated(int r, Map<String, Object> info, String err) {
+        if (r != assocRequest || associateCall < 0) {
+            stale("associated " + r);
+            return;
+        }
+        int call = associateCall;
+        associateCall = -1;
+        if (err != null) {
+            refused(call, err);
+            return;
+        }
+        ok(call, info);
+    }
+
+    public void associations(int call) {
+        Object r = port.associations();
+        if (r instanceof String) {
+            refused(call, (String) r);
+            return;
+        }
+        List<Object> list = new ArrayList<>();
+        for (Object o : (List<?>) r) {
+            if (o instanceof Map) {
+                Map<String, Object> m = obj();
+                m.putAll(castObj(o));
+                Object a = m.get("association");
+                m.put("observing", a instanceof Integer && observing.contains(a));
+                list.add(m);
+            }
+        }
+        ok(call, obj("associations", list));
+    }
+
+    @SuppressWarnings("unchecked")
+    private static Map<String, Object> castObj(Object o) {
+        return (Map<String, Object>) o;
+    }
+
+    public void disassociate(int call, int association) {
+        if (association <= 0) {
+            fail(call, "bad_value", "association is the id associate or associations gave");
+            return;
+        }
+        String err = port.disassociate(association);
+        if (err != null) {
+            refused(call, err);
+            return;
+        }
+        observing.remove(association);
+        ok(call, obj("association", association, "removed", true));
+    }
+
+    public void presence(int call, int association, boolean start) {
+        if (!android) {
+            fail(call, "platform_limit", PRESENCE_LIMIT);
+            return;
+        }
+        if (association <= 0) {
+            fail(call, "bad_value", "association is the id associate or associations gave");
+            return;
+        }
+        if (!start && !observing.contains(association)) {
+            ok(call, obj("association", association, "observing", false, "stopped", false));
+            return;
+        }
+        String err = port.presence(start, association);
+        if (err != null) {
+            refused(call, err);
+            return;
+        }
+        if (start) observing.add(association);
+        else observing.remove(association);
+        ok(call, start ? obj("association", association, "observing", true)
+                : obj("association", association, "observing", false, "stopped", true));
+    }
+
+    /**
+     * The system reported a presence change of an associated device (CompanionDeviceService, also when
+     * it started the process for it): appeared, disappeared, connected or disconnected.
+     */
+    public void presenceEvent(int association, String address, String event) {
+        if (association > 0) observing.add(association);
+        record("presence", obj("association", association, "address", address, "event", event));
+    }
+
     // ---- adapter changes of the server ----------------------------------------------------------
 
     /** Bluetooth left on: the server's platform objects of the old epoch are gone. */
@@ -1995,6 +3283,27 @@ public final class BleCore {
         }
         for (String central : new ArrayList<>(centrals.keySet())) endCentral(central, "adapter");
         prepared.clear();
+        for (Channel ch : new ArrayList<>(channels.values())) {
+            channels.remove(ch.n);
+            port.l2capClose(ch.n);
+            if ("opening".equals(ch.state)) {
+                fail(ch.call, "unavailable", "Bluetooth is " + adapter);
+            } else {
+                ch.state = "closed";
+                Map<String, Object> rec = channelView(ch);
+                rec.put("reason", "adapter");
+                record("l2cap", rec);
+            }
+        }
+        for (Object[] p : publishing.values()) fail((Integer) p[0], "unavailable", "Bluetooth is " + adapter);
+        publishing.clear();
+        for (Integer psm : published.keySet()) port.l2capUnpublish(psm);
+        published.clear();
+        for (AdvSet a : sets.values()) {
+            if (a.on) record("advertising_set", obj("set", a.n, "state", "stopped", "reason", "adapter"));
+            else fail(a.call, "unavailable", "Bluetooth is " + adapter);
+        }
+        sets.clear();
         if (sending != null) failJob(sending.job, "unavailable", "Bluetooth is " + adapter);
         for (Packet p : notifyQueue) failJob(p.job, "unavailable", "Bluetooth is " + adapter);
         sending = null;
@@ -2033,9 +3342,9 @@ public final class BleCore {
 
     // ---- keep-alive (Android foreground service) and the iOS server file ------------------------
 
-    /** Links, remote centrals and advertising: what the Android keep-alive service holds the process for. */
+    /** Links, remote centrals, advertising, started sets and open channels: what the Android keep-alive service holds the process for. */
     public int holdCount() {
-        return links.size() + centrals.size() + (advertising ? 1 : 0);
+        return links.size() + centrals.size() + (advertising ? 1 : 0) + setsOn() + openChannels();
     }
 
     private void updateHold() {
@@ -2209,6 +3518,47 @@ public final class BleCore {
                 persistScheduled = false;
                 port.persist(serverSnapshot());
                 return;
+            case "att": {
+                Req q = requests.remove(token);
+                if (q == null) {
+                    stale("att timer " + token);
+                    return;
+                }
+                port.attRespond(q.epoch, token, "unlikely", q.offset, null);
+                record("att_request", obj("request", token, "state", "expired", "status", "unlikely"));
+                return;
+            }
+            case "l2cap_publish": {
+                Object[] p = publishing.remove(token);
+                if (p == null) {
+                    stale("l2cap_publish timer " + token);
+                    return;
+                }
+                fail((Integer) p[0], "l2cap_failed", "the platform did not answer the publish in " + OP_MS / 1000 + " s");
+                return;
+            }
+            case "l2cap_open": {
+                Channel ch = channels.get(token);
+                if (ch == null || !"opening".equals(ch.state)) {
+                    stale("l2cap_open timer " + token);
+                    return;
+                }
+                channels.remove(token);
+                port.l2capClose(token);
+                fail(ch.call, "timeout", "the channel did not open in time");
+                return;
+            }
+            case "advertise_set": {
+                AdvSet a = sets.get(token);
+                if (a == null || a.on) {
+                    stale("advertise_set timer " + token);
+                    return;
+                }
+                sets.remove(token);
+                port.advertiseSetStop(token);
+                fail(a.call, "advertise_failed", "the platform did not answer the set start");
+                return;
+            }
             default:
                 stale("timer " + kind);
         }
@@ -2217,6 +3567,31 @@ public final class BleCore {
     // ---- journal --------------------------------------------------------------------------------
 
     public void events(int call, int after, int max) {
+        events(call, after, max, null);
+    }
+
+    /**
+     * {@code asked}: null or this run reads the live journal; the previous run's id reads the journal
+     * the previous app process left on disk.
+     */
+    public void events(int call, int after, int max, String asked) {
+        if (asked != null && !asked.equals(run)) {
+            if (!asked.equals(previousRun)) {
+                fail(call, "not_found", "no journal is kept for that run");
+                return;
+            }
+            List<Object> out = new ArrayList<>();
+            int next = after;
+            for (Map<String, Object> r : previousRecords) {
+                if (out.size() >= max) break;
+                int seq = r.get("seq") instanceof Number ? ((Number) r.get("seq")).intValue() : 0;
+                if (seq <= after) continue;
+                out.add(r);
+                next = seq;
+            }
+            ok(call, obj("records", out, "next", next, "dropped", previousDropped, "run", asked));
+            return;
+        }
         List<Object> out = new ArrayList<>();
         int next = after;
         for (Iterator<Map<String, Object>> it = journal.iterator(); it.hasNext() && out.size() < max; ) {

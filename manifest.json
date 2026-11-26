@@ -1,5 +1,5 @@
 {
-  "version": "1.0.0",
+  "version": "1.1.0",
   "bridge": {
     "routes": [
       {
@@ -25,6 +25,10 @@
             "type": "int",
             "min": 1,
             "max": 200
+          },
+          "run": {
+            "type": "string",
+            "max": 64
           }
         },
         "output": {
@@ -52,8 +56,65 @@
             "values": [
               "low_power",
               "balanced",
-              "low_latency"
+              "low_latency",
+              "opportunistic"
             ]
+          },
+          "names": {
+            "type": "string",
+            "max": 2600
+          },
+          "manufacturer_id": {
+            "type": "int",
+            "min": 0,
+            "max": 65535
+          },
+          "manufacturer_hex": {
+            "type": "string",
+            "max": 62
+          },
+          "legacy": {
+            "type": "bool"
+          },
+          "phy": {
+            "type": "enum",
+            "values": [
+              "1m",
+              "coded",
+              "all"
+            ]
+          },
+          "report_delay": {
+            "type": "int",
+            "min": 0,
+            "max": 600000
+          },
+          "callback_type": {
+            "type": "enum",
+            "values": [
+              "all",
+              "first_match",
+              "first_match_lost"
+            ]
+          },
+          "match": {
+            "type": "enum",
+            "values": [
+              "aggressive",
+              "sticky"
+            ]
+          },
+          "matches": {
+            "type": "enum",
+            "values": [
+              "one",
+              "few",
+              "max"
+            ]
+          },
+          "solicited": {
+            "type": "string",
+            "max": 740
           }
         },
         "output": {
@@ -90,8 +151,32 @@
           },
           "seconds": {
             "type": "int",
-            "min": 1,
+            "min": 0,
             "max": 20
+          },
+          "server": {
+            "type": "https_url",
+            "hosts": [
+              "api.example.com"
+            ]
+          },
+          "notify_on_connection": {
+            "type": "bool"
+          },
+          "notify_on_disconnection": {
+            "type": "bool"
+          },
+          "notify_on_notification": {
+            "type": "bool"
+          },
+          "transport_bridging": {
+            "type": "bool"
+          },
+          "requires_ancs": {
+            "type": "bool"
+          },
+          "system_reconnect": {
+            "type": "bool"
           }
         },
         "timeout_ms": 25000,
@@ -216,11 +301,44 @@
           },
           "response": {
             "type": "bool"
+          },
+          "text": {
+            "type": "string",
+            "max": 512
           }
         },
         "output": {
           "variable": "bleWrite",
           "callback": "onBleWrite"
+        }
+      },
+      {
+        "name": "raw",
+        "params": {
+          "id": {
+            "type": "string",
+            "max": 64,
+            "required": true
+          },
+          "hex": {
+            "type": "string",
+            "max": 1024
+          },
+          "b64": {
+            "type": "string",
+            "max": 684
+          },
+          "text": {
+            "type": "string",
+            "max": 512
+          },
+          "response": {
+            "type": "bool"
+          }
+        },
+        "output": {
+          "variable": "bleRaw",
+          "callback": "onBleRaw"
         }
       },
       {
@@ -250,6 +368,12 @@
             "type": "int",
             "min": 0,
             "max": 31
+          },
+          "server": {
+            "type": "https_url",
+            "hosts": [
+              "api.example.com"
+            ]
           }
         },
         "output": {
@@ -325,6 +449,111 @@
         }
       },
       {
+        "name": "priority",
+        "params": {
+          "id": {
+            "type": "string",
+            "max": 64,
+            "required": true
+          },
+          "level": {
+            "type": "enum",
+            "values": [
+              "balanced",
+              "high",
+              "low_power",
+              "dck"
+            ]
+          }
+        },
+        "output": {
+          "variable": "blePriority",
+          "callback": "onBlePriority"
+        }
+      },
+      {
+        "name": "phy",
+        "params": {
+          "id": {
+            "type": "string",
+            "max": 64,
+            "required": true
+          },
+          "tx": {
+            "type": "string",
+            "max": 14
+          },
+          "rx": {
+            "type": "string",
+            "max": 14
+          },
+          "coded": {
+            "type": "enum",
+            "values": [
+              "none",
+              "s2",
+              "s8"
+            ]
+          }
+        },
+        "output": {
+          "variable": "blePhy",
+          "callback": "onBlePhy"
+        }
+      },
+      {
+        "name": "bond",
+        "params": {
+          "id": {
+            "type": "string",
+            "max": 64,
+            "required": true
+          }
+        },
+        "output": {
+          "variable": "bleBond",
+          "callback": "onBleBond"
+        }
+      },
+      {
+        "name": "bonds",
+        "params": {},
+        "output": {
+          "variable": "bleBonds",
+          "callback": "onBleBonds"
+        }
+      },
+      {
+        "name": "system_devices",
+        "params": {
+          "services": {
+            "type": "string",
+            "max": 740
+          }
+        },
+        "output": {
+          "variable": "bleSystemDevices",
+          "callback": "onBleSystemDevices"
+        }
+      },
+      {
+        "name": "connection_events",
+        "params": {
+          "services": {
+            "type": "string",
+            "max": 740
+          },
+          "ids": {
+            "type": "string",
+            "max": 740
+          }
+        },
+        "output": {
+          "variable": "bleConnectionEvents",
+          "callback": "onBleConnectionEvents"
+        }
+      },
+      {
         "name": "service_add",
         "params": {
           "uuid": {
@@ -391,6 +620,10 @@
           "b64": {
             "type": "string",
             "max": 684
+          },
+          "text": {
+            "type": "string",
+            "max": 512
           }
         },
         "output": {
@@ -427,6 +660,10 @@
           "central": {
             "type": "string",
             "max": 64
+          },
+          "text": {
+            "type": "string",
+            "max": 512
           }
         },
         "output": {
@@ -476,6 +713,18 @@
             "type": "int",
             "min": 0,
             "max": 3600
+          },
+          "tx_power": {
+            "type": "enum",
+            "values": [
+              "ultra_low",
+              "low",
+              "medium",
+              "high"
+            ]
+          },
+          "include_tx_power": {
+            "type": "bool"
           }
         },
         "output": {
@@ -524,6 +773,428 @@
         "output": {
           "variable": "bleKeepAlive",
           "callback": "onBleKeepAlive"
+        }
+      },
+      {
+        "name": "respond",
+        "params": {
+          "request": {
+            "type": "int",
+            "min": 1,
+            "required": true
+          },
+          "status": {
+            "type": "enum",
+            "values": [
+              "ok",
+              "not_permitted",
+              "invalid_offset",
+              "invalid_length",
+              "insufficient_authentication",
+              "insufficient_authorization",
+              "insufficient_encryption",
+              "not_supported",
+              "insufficient_resources",
+              "unlikely"
+            ]
+          },
+          "hex": {
+            "type": "string",
+            "max": 1024
+          },
+          "b64": {
+            "type": "string",
+            "max": 684
+          },
+          "text": {
+            "type": "string",
+            "max": 512
+          },
+          "offset": {
+            "type": "int",
+            "min": 0,
+            "max": 511
+          }
+        },
+        "output": {
+          "variable": "bleRespond",
+          "callback": "onBleRespond"
+        }
+      },
+      {
+        "name": "l2cap_publish",
+        "params": {
+          "encrypted": {
+            "type": "bool"
+          }
+        },
+        "output": {
+          "variable": "bleL2capPublish",
+          "callback": "onBleL2capPublish"
+        }
+      },
+      {
+        "name": "l2cap_unpublish",
+        "params": {
+          "psm": {
+            "type": "int",
+            "min": 1,
+            "max": 255,
+            "required": true
+          }
+        },
+        "output": {
+          "variable": "bleL2capUnpublish",
+          "callback": "onBleL2capUnpublish"
+        }
+      },
+      {
+        "name": "l2cap_open",
+        "params": {
+          "id": {
+            "type": "string",
+            "max": 64,
+            "required": true
+          },
+          "psm": {
+            "type": "int",
+            "min": 1,
+            "max": 255,
+            "required": true
+          },
+          "encrypted": {
+            "type": "bool"
+          },
+          "seconds": {
+            "type": "int",
+            "min": 1,
+            "max": 20
+          }
+        },
+        "timeout_ms": 25000,
+        "output": {
+          "variable": "bleL2capOpen",
+          "callback": "onBleL2capOpen"
+        }
+      },
+      {
+        "name": "l2cap_send",
+        "params": {
+          "channel": {
+            "type": "int",
+            "min": 1,
+            "required": true
+          },
+          "hex": {
+            "type": "string",
+            "max": 4096
+          },
+          "b64": {
+            "type": "string",
+            "max": 2732
+          },
+          "text": {
+            "type": "string",
+            "max": 2048
+          }
+        },
+        "output": {
+          "variable": "bleL2capSend",
+          "callback": "onBleL2capSend"
+        }
+      },
+      {
+        "name": "l2cap_close",
+        "params": {
+          "channel": {
+            "type": "int",
+            "min": 1,
+            "required": true
+          }
+        },
+        "output": {
+          "variable": "bleL2capClose",
+          "callback": "onBleL2capClose"
+        }
+      },
+      {
+        "name": "l2cap_channels",
+        "params": {},
+        "output": {
+          "variable": "bleL2capChannels",
+          "callback": "onBleL2capChannels"
+        }
+      },
+      {
+        "name": "advertise_set_start",
+        "params": {
+          "legacy": {
+            "type": "bool"
+          },
+          "connectable": {
+            "type": "bool"
+          },
+          "scannable": {
+            "type": "bool"
+          },
+          "anonymous": {
+            "type": "bool"
+          },
+          "include_tx_power": {
+            "type": "bool"
+          },
+          "primary_phy": {
+            "type": "enum",
+            "values": [
+              "1m",
+              "coded"
+            ]
+          },
+          "secondary_phy": {
+            "type": "enum",
+            "values": [
+              "1m",
+              "2m",
+              "coded"
+            ]
+          },
+          "interval_ms": {
+            "type": "int",
+            "min": 100,
+            "max": 10485759
+          },
+          "tx_power_dbm": {
+            "type": "int",
+            "min": -127,
+            "max": 20
+          },
+          "services": {
+            "type": "string",
+            "max": 740
+          },
+          "include_name": {
+            "type": "bool"
+          },
+          "manufacturer_id": {
+            "type": "int",
+            "min": 0,
+            "max": 65535
+          },
+          "manufacturer_hex": {
+            "type": "string",
+            "max": 3304
+          },
+          "service_data_uuid": {
+            "type": "string",
+            "max": 36
+          },
+          "service_data_hex": {
+            "type": "string",
+            "max": 3304
+          },
+          "tx_power_data": {
+            "type": "bool"
+          },
+          "response_services": {
+            "type": "string",
+            "max": 740
+          },
+          "response_include_name": {
+            "type": "bool"
+          },
+          "response_manufacturer_id": {
+            "type": "int",
+            "min": 0,
+            "max": 65535
+          },
+          "response_manufacturer_hex": {
+            "type": "string",
+            "max": 3304
+          },
+          "periodic_interval_ms": {
+            "type": "int",
+            "min": 100,
+            "max": 81898
+          },
+          "periodic_include_tx_power": {
+            "type": "bool"
+          },
+          "periodic_manufacturer_id": {
+            "type": "int",
+            "min": 0,
+            "max": 65535
+          },
+          "periodic_manufacturer_hex": {
+            "type": "string",
+            "max": 3304
+          },
+          "periodic_service_data_uuid": {
+            "type": "string",
+            "max": 36
+          },
+          "periodic_service_data_hex": {
+            "type": "string",
+            "max": 3304
+          },
+          "seconds": {
+            "type": "int",
+            "min": 0,
+            "max": 655
+          },
+          "max_events": {
+            "type": "int",
+            "min": 0,
+            "max": 255
+          }
+        },
+        "output": {
+          "variable": "bleAdvertiseSetStart",
+          "callback": "onBleAdvertiseSetStart"
+        }
+      },
+      {
+        "name": "advertise_set_stop",
+        "params": {
+          "set": {
+            "type": "int",
+            "min": 1,
+            "required": true
+          }
+        },
+        "output": {
+          "variable": "bleAdvertiseSetStop",
+          "callback": "onBleAdvertiseSetStop"
+        }
+      },
+      {
+        "name": "wake_start",
+        "params": {
+          "services": {
+            "type": "string",
+            "max": 740
+          },
+          "names": {
+            "type": "string",
+            "max": 2600
+          },
+          "manufacturer_id": {
+            "type": "int",
+            "min": 0,
+            "max": 65535
+          },
+          "manufacturer_hex": {
+            "type": "string",
+            "max": 62
+          },
+          "mode": {
+            "type": "enum",
+            "values": [
+              "low_power",
+              "balanced",
+              "low_latency",
+              "opportunistic"
+            ]
+          }
+        },
+        "output": {
+          "variable": "bleWakeStart",
+          "callback": "onBleWakeStart"
+        }
+      },
+      {
+        "name": "wake_stop",
+        "params": {},
+        "output": {
+          "variable": "bleWakeStop",
+          "callback": "onBleWakeStop"
+        }
+      },
+      {
+        "name": "associate",
+        "params": {
+          "services": {
+            "type": "string",
+            "max": 36
+          },
+          "name": {
+            "type": "string",
+            "max": 248
+          },
+          "address": {
+            "type": "string",
+            "max": 17
+          },
+          "single": {
+            "type": "bool"
+          },
+          "manufacturer_id": {
+            "type": "int",
+            "min": 0,
+            "max": 65535
+          },
+          "manufacturer_hex": {
+            "type": "string",
+            "max": 62
+          },
+          "migrate": {
+            "type": "string",
+            "max": 36
+          }
+        },
+        "timeout_ms": 25000,
+        "output": {
+          "variable": "bleAssociate",
+          "callback": "onBleAssociate"
+        }
+      },
+      {
+        "name": "associations",
+        "params": {},
+        "output": {
+          "variable": "bleAssociations",
+          "callback": "onBleAssociations"
+        }
+      },
+      {
+        "name": "disassociate",
+        "params": {
+          "association": {
+            "type": "int",
+            "min": 1,
+            "required": true
+          }
+        },
+        "output": {
+          "variable": "bleDisassociate",
+          "callback": "onBleDisassociate"
+        }
+      },
+      {
+        "name": "presence_start",
+        "params": {
+          "association": {
+            "type": "int",
+            "min": 1,
+            "required": true
+          }
+        },
+        "output": {
+          "variable": "blePresenceStart",
+          "callback": "onBlePresenceStart"
+        }
+      },
+      {
+        "name": "presence_stop",
+        "params": {
+          "association": {
+            "type": "int",
+            "min": 1,
+            "required": true
+          }
+        },
+        "output": {
+          "variable": "blePresenceStop",
+          "callback": "onBlePresenceStop"
         }
       }
     ],
@@ -577,6 +1248,56 @@
         "name": "advertise_end",
         "callback": "onBleAdvertiseEnd",
         "scope": "document"
+      },
+      {
+        "name": "bond",
+        "callback": "onBleBond",
+        "scope": "document"
+      },
+      {
+        "name": "phy",
+        "callback": "onBlePhy",
+        "scope": "document"
+      },
+      {
+        "name": "connection_event",
+        "callback": "onBleConnectionEvent",
+        "scope": "document"
+      },
+      {
+        "name": "ancs",
+        "callback": "onBleAncs",
+        "scope": "document"
+      },
+      {
+        "name": "att_request",
+        "callback": "onBleAttRequest",
+        "scope": "document"
+      },
+      {
+        "name": "l2cap",
+        "callback": "onBleL2cap",
+        "scope": "document"
+      },
+      {
+        "name": "l2cap_data",
+        "callback": "onBleL2capData",
+        "scope": "document"
+      },
+      {
+        "name": "advertising_set",
+        "callback": "onBleAdvertisingSet",
+        "scope": "document"
+      },
+      {
+        "name": "wake",
+        "callback": "onBleWake",
+        "scope": "app"
+      },
+      {
+        "name": "presence",
+        "callback": "onBlePresence",
+        "scope": "app"
       }
     ]
   },
@@ -587,7 +1308,9 @@
         "ios/app/BleExtension.swift",
         "ios/app/BleCore.swift",
         "ios/app/BleCentralRadio.swift",
-        "ios/app/BlePeripheralRadio.swift"
+        "ios/app/BlePeripheralRadio.swift",
+        "ios/app/BleServerMirror.swift",
+        "ios/app/BleAccessories.swift"
       ],
       "frameworks": [
         "CoreBluetooth"

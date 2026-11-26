@@ -6,7 +6,7 @@ Bluetooth Low Energy as central and peripheral on iOS and Android.
 
 This ready-made extension is part of Despia V3 Extensions. First-party V4 support comes through the new package registry, with a different package shape.
 
-Bluetooth central support is pending device validation.
+Bluetooth central and peripheral support is pending validation on physical devices. Route answers for state, permission and an unavailable radio are proven in the iOS simulator and the Android emulator; neither has a Bluetooth radio.
 
 [V3 extension documentation](https://setup.despia.com/experiments/v3-extensions) and [extension skill](https://github.com/despia-legacy/extension-skill).
 
@@ -76,8 +76,10 @@ Standard error codes: `bad_request` (an undeclared or missing parameter, or a va
 
 This extension gives your web app Bluetooth Low Energy operations on iOS (CoreBluetooth) and Android (`android.bluetooth`), in both roles:
 
-- **Central:** scan, connect, discover services, read, write, subscribe to notifications, read RSSI and set the MTU.
+- **Central:** scan with service, name and manufacturer filters, connect, discover services, read and write characteristics and descriptors (with and without response), subscribe to notifications and indications, read RSSI, set the MTU, set the connection priority and the PHY, bond, list bonded and system-connected devices, and watch connections the system makes.
 - **Peripheral:** publish your own GATT services, answer reads from a value store, receive writes, send notifications, and advertise.
+- **Server posts:** `connect` and `subscribe` can post every link change and every notified value to your HTTPS server, in every app state, from a queue that survives a restart.
+- **Journal:** every event is kept on disk, so a page reads what happened while it was not loaded, including during the previous launch.
 
 Bytes cross the bridge as lower-case `hex` (or `b64` in parameters). No native object ever reaches the page.
 
@@ -87,7 +89,9 @@ Bytes cross the bridge as lower-case `hex` (or `b64` in parameters). No native o
 
 Despia takes app identity from the existing build configuration. `public/` is the folder your site serves from its root (in SvelteKit, write `static/`). The paths must stay as written, because the manifest names them. Signed build verification checks the exact files included in the native build.
 
-Supply `NSBluetoothAlwaysUsageDescription` with text explaining your app's Bluetooth use. Use the app's existing purpose-description configuration, or, with the upcoming runtime, add a nonempty string under `ios.app.info_plist` and set `ios.app.custom_keys` to `true`. Existing nonempty app-configured text takes priority. Ensure the final Android manifest declares the permissions required below. These declarations do not grant runtime access: the user decides when Android presents the permission request. The Bluetooth background modes come from the manifest. The Android module declares the two AndroidX dependencies listed below. The app's dependency build verification must include their resolved versions.
+Replace the placeholder host `api.example.com` in the `server` parameters of `connect` and `subscribe` in `manifest.json` with the host of the server that receives the posts, or remove those two `server` parameters if you do not use them. A URL on any other host is refused with `bad_request`.
+
+Supply `NSBluetoothAlwaysUsageDescription` with text explaining your app's Bluetooth use. Use the app's existing purpose-description configuration, or, with the upcoming runtime, add a nonempty string under `ios.app.info_plist` and set `ios.app.custom_keys` to `true`. Existing nonempty app-configured text takes priority. On Android, turn on the app's Bluetooth permission (the `bluetooth_always` key in the app's permissions) and Location (`location_when_in_use`): with the upcoming runtime, these declare the permissions required below in the final Android manifest. These declarations do not grant runtime access: the user decides when Android presents the permission request. The Bluetooth background modes come from the manifest. The Android module declares the two AndroidX dependencies listed below. The app's dependency build verification must include their resolved versions.
 
 ---
 
@@ -95,16 +99,17 @@ Supply `NSBluetoothAlwaysUsageDescription` with text explaining your app's Bluet
 
 ### iOS
 
-- **Bluetooth.** `NSBluetoothAlwaysUsageDescription`, declared under `requires.usage_descriptions`. Supply its purpose text as described above. Call `state` with `prompt=true` to show the system prompt. Without `prompt`, `state` never shows it.
+- **Bluetooth.** `NSBluetoothAlwaysUsageDescription`, declared under `requires.usage_descriptions`. Supply its purpose text as described above. Call `state` with `prompt=true` to show the system prompt and, with Bluetooth off, iOS's own "Turn On Bluetooth" alert. Nothing else shows either: the central is created with `CBCentralManagerOptionShowPowerAlertKey` false (Apple's default is true: "the system warns the user if the app instantiates the central manager when Bluetooth service isn't available", read 2026-11-26), and `state` without `prompt` never creates a manager before the app is authorized.
 - **Background modes.** `bluetooth-central` and `bluetooth-peripheral`.
-- **State restoration.** The `bluetooth_restoration` lifecycle hook and the central restore identifier `main`. When iOS relaunches the app for Bluetooth, kept links come back and the `restored` event fires.
+- **State restoration.** The `bluetooth_restoration` lifecycle hook and the central restore identifier `main`. When iOS relaunches the app for Bluetooth, kept links come back and the `restored` event fires. The app is scene-based, where iOS hands back no launch options, so the central is recreated with its identifier at a launch (as Apple's "Central Manager State Restoration Options" describes) only when the page already used Bluetooth in an earlier run (`ble/central-armed` in the app's data directory) and the app has Bluetooth authorization: a first launch, or an app whose page never called Bluetooth, creates no manager at launch, and a launch never shows a prompt or the power alert.
 
 ### Android
 
-- **Nearby devices and location.** `BLUETOOTH_SCAN`, `BLUETOOTH_CONNECT`, `BLUETOOTH_ADVERTISE` and `ACCESS_FINE_LOCATION`, required under `requires.permissions`. They must be declared in the final Android manifest. A declaration does not grant runtime consent. The extension requests the permissions a route needs, one request at a time, and handles the user's decision. On Android 12 (API 31) and later a scan needs `BLUETOOTH_SCAN` and also `ACCESS_FINE_LOCATION` unless the app declares `neverForLocation`; a link needs `BLUETOOTH_CONNECT`; advertising needs `BLUETOOTH_ADVERTISE` and `BLUETOOTH_CONNECT`. On Android 7 to 11 (API 24 to 30) a scan needs `ACCESS_FINE_LOCATION`.
+- **Nearby devices and location.** `BLUETOOTH_SCAN`, `BLUETOOTH_CONNECT`, `BLUETOOTH_ADVERTISE` and `ACCESS_FINE_LOCATION`, required under `requires.permissions`. They must be declared in the final Android manifest: the app's Bluetooth permission (`bluetooth_always`) declares the three Bluetooth grants, and its Location permission (`location_when_in_use`) declares `ACCESS_FINE_LOCATION`. A declaration does not grant runtime consent. The extension requests the permissions a route needs, one request at a time, and handles the user's decision. On Android 12 (API 31) and later a scan needs `BLUETOOTH_SCAN` and also `ACCESS_FINE_LOCATION` unless the app declares `neverForLocation`; a link needs `BLUETOOTH_CONNECT`; advertising needs `BLUETOOTH_ADVERTISE` and `BLUETOOTH_CONNECT`. On Android 7 to 11 (API 24 to 30) a scan needs `ACCESS_FINE_LOCATION`.
 - **Legacy grants.** The module's `AndroidManifest.xml` adds `BLUETOOTH` and `BLUETOOTH_ADMIN` up to API 30.
 - **Keep-alive.** `FOREGROUND_SERVICE` and `FOREGROUND_SERVICE_CONNECTED_DEVICE`, for the `connectedDevice` foreground service that keeps links alive while the app is in the background. It starts only from `keep_alive`, while the app is visible.
-- **Libraries.** `androidx.core:core:1.18.0` and `androidx.activity:activity:1.13.0`.
+- **Restoration.** The module's `AndroidManifest.xml` adds `REQUEST_OBSERVE_COMPANION_DEVICE_PRESENCE` (a normal permission, granted at install) for `presence_start`, the optional feature `android.software.companion_device_setup` (the app still installs on a device without it, where the companion routes answer `unavailable`), the receiver that takes the wake scan's results (not exported), and the companion device service the system binds for presence (protected by `BIND_COMPANION_DEVICE_SERVICE`). `wake_start` and `wake_stop` ask for the scan permissions above; the companion routes need no runtime permission.
+- **Libraries.** `androidx.core:core:1.18.0` and `androidx.activity:activity:1.13.0`. core 1.19.1, the newest stable (23 September 2026, read on the AndroidX release page 2026-11-26), cannot be used yet: its AAR metadata requires compileSdk 37 and Android Gradle plugin 9.1.0, and the base app builds with compileSdk 36 and plugin 8.9.1 (a real release build with 1.19.1 failed `checkAarMetadata`, 2026-11-26).
 
 ---
 
@@ -241,9 +246,9 @@ if (!advertising.ok) throw new Error(advertising.code + ': ' + advertising.error
 console.log(advertising.data.applied);
 ```
 
-### Missed events
+### Missed events and the previous launch
 
-Every event is also kept in a journal of up to 2000 records, each with a `seq`. A page that was not loaded when something happened reads it back:
+Every event is also kept in a journal of up to 2000 records, each with a `seq`. The journal is written to the app's data directory within 250 ms of each event. A page that was not loaded when something happened reads it back:
 
 ```javascript
 import despia from 'despia-native';
@@ -258,7 +263,25 @@ for (const record of journal.data.records) console.log(record);
 after = journal.data.next;
 ```
 
+Each launch is a run. `state` answers `run` (this launch) and `previousRun` (the launch before, or `null`). Pass `run` with the previous run's name to `events` to read what that launch recorded, for example notifications that arrived just before the system ended the app.
+
 Ask for Bluetooth first: call `state` with `prompt=true` before the first scan, connect or server route, so the system prompt is answered before anything waits on it. A route that waited too long answers `timeout` and started nothing. Call it again. A `connect` to a device that is already connecting (for example one iOS brought back after your app relaunched) joins that attempt and resolves with its result.
+
+### Posting to your server
+
+Pass `server` (an HTTPS URL on a host the manifest allows) to `connect` and every link change of that device is posted as JSON:
+
+```json
+{"event": "ble_state", "deviceId": "...", "state": "connected", "timestamp": 1764000000.5, "background": true, "battery": 81}
+```
+
+A failed link adds `error` (the platform's message); a link that ended adds `reason`. Pass `server` to `subscribe` and every notified value of that characteristic is posted:
+
+```json
+{"event": "ble_data", "deviceId": "...", "service": "...", "characteristic": "...", "value": "AQI=", "valueHex": "0102", "timestamp": 1764000000.5, "background": false, "battery": 81}
+```
+
+`battery` is 0 to 100, or -1 when the system does not report it. Posts are sent one at a time, with a 15 second timeout and no redirects. A post that fails is retried after 30 seconds. Up to 500 posts wait in a queue in the app's data directory; when it is full, the oldest is dropped and counted. `state` answers `server` with `servers`, `pending` and `dropped`. A `disconnect` posts the last state and then stops watching that device. `unsubscribe` stops the posts for that characteristic.
 
 ### Routes
 
@@ -266,20 +289,36 @@ Ask for Bluetooth first: call `state` with `prompt=true` before the first scan, 
 
 | Route         | Parameters                                                                              | Answer `data`                                    | Answer variable | Callback |
 | ------------- | --------------------------------------------------------------------------------------- | ------------------------------------------------ | --- | --- |
-| `state`       | `prompt`                                                                                | `state`, `authorization`, `scanning`, `advertising`, `links`, `centrals`, `keepAlive`, `epoch`, `run` | `bleState` | `onBleState` |
-| `events`      | `after` (0 or more), `max` (1 to 200)                                                   | `records`, `next`, `dropped`, `run`              | `bleEvents` | `onBleEvents` |
-| `scan_start`  | `services` (comma-separated, up to 20), `seconds` (0 to 3600, 0 until `scan_stop`), `duplicates`, `mode` | `scan`                          | `bleScanStart` | `onBleScanStart` |
+| `state`       | `prompt`                                                                                | `state`, `authorization`, `scanning`, `advertising`, `links`, `centrals`, `keepAlive`, `epoch`, `run`, `previousRun`, `server`; on Android also `wake` (the running wake scan's filters, or `null`) and `observing` (the associations whose presence is observed) | `bleState` | `onBleState` |
+| `events`      | `after` (0 or more), `max` (1 to 200), `run`                                            | `records`, `next`, `dropped`, `run`              | `bleEvents` | `onBleEvents` |
+| `scan_start`  | `services` (comma-separated, up to 20), `names` (comma-separated, up to 10), `manufacturer_id` (0 to 65535) with optional `manufacturer_hex` (a data prefix), `seconds` (0 to 3600, 0 until `scan_stop`), `duplicates`, `mode`, and the scan options below | `scan`, `applied` | `bleScanStart` | `onBleScanStart` |
 | `scan_stop`   | none                                                                                    | `scan`, `stopped`                                | `bleScanStop` | `onBleScanStop` |
 | `devices`     | none                                                                                    | `devices` (up to 200)                            | `bleDevices` | `onBleDevices` |
-| `connect`     | `id` (required), `auto`, `seconds` (1 to 20, default 10)                                 | `id`, `link`, `state`, `mtu`                     | `bleConnect` | `onBleConnect` |
+| `connect`     | `id` (required), `auto`, `seconds` (0 to 20, default 10; 0 answers at once and waits with no limit), `server`, and the iOS connect options below | `id`, `link`, `state`, `mtu` | `bleConnect` | `onBleConnect` |
 | `disconnect`  | `id` (required)                                                                         | `id`, `state`, `confirmed`                       | `bleDisconnect` | `onBleDisconnect` |
 | `links`       | none                                                                                    | `links`                                          | `bleLinks` | `onBleLinks` |
 | `discover`    | `id` (required)                                                                         | `id`, `services`                                 | `bleDiscover` | `onBleDiscover` |
 | `read`        | `id`, `service`, `char` (required), `service_n`, `char_n`, `descriptor`                  | `hex`                                            | `bleRead` | `onBleRead` |
-| `write`       | as `read`, plus `hex` or `b64`, `response` (default `true`)                              | `written`, `chunks`                              | `bleWrite` | `onBleWrite` |
-| `subscribe`, `unsubscribe` | `id`, `service`, `char` (required), `service_n`, `char_n`                  | `subscribed`, `mode`                             | `bleSubscribe`, `bleUnsubscribe` | `onBleSubscribe`, `onBleUnsubscribe` |
+| `write`       | as `read`, plus one of `hex`, `b64` or `text` (UTF-8), `response` (default `true`)       | `written`, `chunks`                              | `bleWrite` | `onBleWrite` |
+| `raw`         | `id` (required), one of `hex`, `b64` or `text`, `response` (default `true`)             | `written`, `chunks`, `service`, `char`, `service_n`, `char_n`, `response` | `bleRaw` | `onBleRaw` |
+| `subscribe`   | `id`, `service`, `char` (required), `service_n`, `char_n`, `server`                     | `subscribed`, `mode`                             | `bleSubscribe` | `onBleSubscribe` |
+| `unsubscribe` | `id`, `service`, `char` (required), `service_n`, `char_n`                               | `subscribed`, `mode`                             | `bleUnsubscribe` | `onBleUnsubscribe` |
 | `rssi`        | `id` (required)                                                                         | `rssi`                                           | `bleRssi` | `onBleRssi` |
 | `mtu`         | `id` (required), `size` (23 to 517)                                                     | `mtu`, `writeMax`, `writeNoResponseMax`, `requested` | `bleMtu` | `onBleMtu` |
+| `priority`    | `id` (required), `level`: `balanced` (default), `high`, `low_power`, `dck`               | `level`                                          | `blePriority` | `onBlePriority` |
+| `phy`         | `id` (required); without `tx` and `rx` it reads the PHY; `tx`, `rx` (comma-separated `1m`, `2m`, `coded`), `coded` (`none`, `s2`, `s8`) | `tx`, `rx` | `blePhy` | `onBlePhy` |
+| `bond`        | `id` (required)                                                                         | `id`, `state`                                    | `bleBond` | `onBleBond` |
+| `bonds`       | none                                                                                    | `devices` (`id`, `name`, `type`, `bond`)          | `bleBonds` | `onBleBonds` |
+| `system_devices` | `services` (required on iOS)                                                         | `devices`                                        | `bleSystemDevices` | `onBleSystemDevices` |
+| `connection_events` | `services`, `ids` (comma-separated device ids)                                    | `services`, `ids`, `applied`                     | `bleConnectionEvents` | `onBleConnectionEvents` |
+
+`bond` answers `bonding` (or the current state when the device is already bonded) and the `bond` event reports the result.
+
+`raw` writes to the first discovered characteristic that takes the write type, as the retired core did, and names it in the answer. Call `discover` first.
+
+Scan options of `scan_start`: `mode` also takes `opportunistic` (Android: results only from other apps' scans); `legacy` and `phy` (`1m`, `coded`, `all`) for extended advertising; `report_delay` (0 to 600000 ms, batched results); `callback_type` (`all`, `first_match`, `first_match_lost`; a lost device arrives in `device` with `lost: true`); `match` (`aggressive`, `sticky`); `matches` (`one`, `few`, `max`); `solicited` (service UUIDs the peripheral solicits). An option this platform has no API for is ignored and reported `false` in `applied`; an unknown option answers `bad_value`.
+
+iOS connect options of `connect`: `notify_on_connection`, `notify_on_disconnection` and `notify_on_notification` (the system alerts while the app is suspended), `transport_bridging`, `requires_ancs`, and `system_reconnect` (iOS 17: the system reconnects the peripheral after the link drops; the `link` event reports `disconnected`, then `reconnecting` and `connected` with reason `system` on a new link number, with the subscriptions restored, as an `auto` link does, while the link stays not `auto`; `disconnect` stops the system reconnect). Android has no such options; they are ignored there.
 
 **Peripheral**
 
@@ -288,46 +327,130 @@ Ask for Bluetooth first: call `state` with `prompt=true` before the first scan, 
 | `service_add`     | `uuid` (required), `primary` (default `true`), `chars`                         | `uuid`, `characteristics`           | `bleServiceAdd` | `onBleServiceAdd` |
 | `service_remove`  | `uuid`; without it, every service                                              | `removed`                           | `bleServiceRemove` | `onBleServiceRemove` |
 | `services`        | none                                                                           | `services`, `advertising`           | `bleServices` | `onBleServices` |
-| `value_set`       | `service`, `char` (required), `char_n`, `hex` or `b64` (up to 512 bytes)        | `bytes`                             | `bleValueSet` | `onBleValueSet` |
+| `value_set`       | `service`, `char` (required), `char_n`, one of `hex`, `b64` or `text` (up to 512 bytes) | `bytes`                    | `bleValueSet` | `onBleValueSet` |
 | `notify`          | as `value_set`, plus `central` (one central; without it, every subscribed one) | `sent`, `subscribers`               | `bleNotify` | `onBleNotify` |
-| `advertise_start` | `services`, `name` (up to 26), `manufacturer_id` with `manufacturer_hex`, `service_data_uuid` with `service_data_hex`, `connectable` (default `true`), `mode`, `seconds` (0 to 3600) | `advertising`, `applied` | `bleAdvertiseStart` | `onBleAdvertiseStart` |
+| `advertise_start` | `services`, `name` (up to 26), `manufacturer_id` with `manufacturer_hex`, `service_data_uuid` with `service_data_hex`, `connectable` (default `true`), `mode`, `seconds` (0 to 3600), `tx_power` (`ultra_low`, `low`, `medium`, `high`), `include_tx_power` | `advertising`, `applied` | `bleAdvertiseStart` | `onBleAdvertiseStart` |
 | `advertise_stop`  | none                                                                           | `advertising`                       | `bleAdvertiseStop` | `onBleAdvertiseStop` |
 | `centrals`        | none                                                                           | `centrals`                          | `bleCentrals` | `onBleCentrals` |
 | `central_drop`    | `central` (required)                                                           | `dropped`                           | `bleCentralDrop` | `onBleCentralDrop` |
 | `keep_alive`      | `enabled` (required)                                                           | `enabled`, `active`, `reason`       | `bleKeepAlive` | `onBleKeepAlive` |
+| `respond`         | `request` (required), `status` (default `ok`), for a read answered `ok` one of `hex`, `b64` or `text` (up to 512 bytes), `offset` (Android) | `request`, `status`, `bytes` | `bleRespond` | `onBleRespond` |
+| `advertise_set_start` | the advertising set parameters below (Android)                             | `set`, `tx_power`                   | `bleAdvertiseSetStart` | `onBleAdvertiseSetStart` |
+| `advertise_set_stop`  | `set` (required)                                                           | `set`, `state`                      | `bleAdvertiseSetStop` | `onBleAdvertiseSetStop` |
 
-`mode` is `low_power`, `balanced` or `low_latency`. A device `id` is the iOS peripheral identifier or the Android MAC address. UUIDs can be 16, 32 or 128 bit in any case; answers always use lower-case 128-bit. `service_n` and `char_n` number equal UUIDs in discovery order.
+**L2CAP channels**
+
+| Route             | Parameters                                                                     | Answer `data`                       | Answer variable | Callback |
+| ----------------- | ------------------------------------------------------------------------------ | ----------------------------------- | --- | --- |
+| `l2cap_publish`   | `encrypted` (default `true`)                                                   | `psm`, `encrypted`                  | `bleL2capPublish` | `onBleL2capPublish` |
+| `l2cap_unpublish` | `psm` (required)                                                               | `psm`, `published`                  | `bleL2capUnpublish` | `onBleL2capUnpublish` |
+| `l2cap_open`      | `id` and `psm` (1 to 255) (required), `encrypted` (default `true`, Android), `seconds` (1 to 20, default 10) | `channel`, `psm`, `id` | `bleL2capOpen` | `onBleL2capOpen` |
+| `l2cap_send`      | `channel` (required), one of `hex`, `b64` or `text` (up to 2048 bytes)        | `channel`, `bytes`                  | `bleL2capSend` | `onBleL2capSend` |
+| `l2cap_close`     | `channel` (required)                                                           | `channel`, `state`                  | `bleL2capClose` | `onBleL2capClose` |
+| `l2cap_channels`  | none                                                                           | `channels`, `published`             | `bleL2capChannels` | `onBleL2capChannels` |
+
+`chars` of `service_add` lists up to 16 characteristics, comma-separated, each `uuid~flags` or `uuid~flags~hex` (the starting value). Flags: `r` read, `w` write, `c` write without response, `n` notify, `i` indicate, `R` read needs encryption (with `r`), `W` write needs encryption (with `w` or `c`), and `a`: the page answers this characteristic's reads and writes itself (with `r`, `w` or `c`).
+
+**Requests the page answers.** A read or write of a characteristic with flag `a` arrives in `att_request` with `state: "open"`, a `request` number, `kind` (`read` or `write`), the `central`, and for a read the `service`, `char`, `char_n` and `offset`, for a write the `writes` (each `service`, `char`, `char_n`, `offset`, `hex`). Answer it with `respond`: `status` is `ok`, `not_permitted`, `invalid_offset`, `invalid_length`, `insufficient_authentication`, `insufficient_authorization`, `insufficient_encryption`, `not_supported`, `insufficient_resources` or `unlikely`, and a read answered `ok` carries the value from the request's offset. A request not answered within 25 seconds is answered `unlikely` for you and reported `state: "expired"` (a central gives up after ATT's 30-second transaction timeout). A request whose central left, or whose adapter went off, is reported `state: "dropped"`. A write the central sent without asking for an answer (Android) is reported `state: "unanswered"` with `request: null`. Writes to characteristics without `a` in the same batch are stored when the page answers `ok`; the page's own characteristic keeps no value, so set it with `value_set` if you also want it served.
+
+**L2CAP channels** carry a byte stream without GATT. The peripheral role publishes a channel with `l2cap_publish` and tells the central its `psm` (for example in a characteristic); each central that opens it appears in the `l2cap` event with `role: "peripheral"`. The central role opens one with `l2cap_open`. Bytes arrive in `l2cap_data` (`records` of `channel` and `hex`, batched like `value`), and `l2cap_send` hands bytes to the channel. The `l2cap` event reports each channel `open` and `closed` (`reason`: `remote`, `error` with `error`, `requested` or `adapter`).
+
+**Advertising sets (Android).** `advertise_set_start` starts one more advertisement beside `advertise_start`, with Android's AdvertisingSetParameters: `legacy` (default `false`: extended advertising), `connectable`, `scannable`, `anonymous`, `include_tx_power` (in the header), `primary_phy` (`1m`, `coded`), `secondary_phy` (`1m`, `2m`, `coded`), `interval_ms` (100 to 10485759), `tx_power_dbm` (-127 to 20; the controller uses the nearest power it supports and `started` reports it). The data: `services`, `include_name`, `manufacturer_id` with `manufacturer_hex`, `service_data_uuid` with `service_data_hex`, `tx_power_data`. A scannable set takes a scan response: `response_services`, `response_include_name`, `response_manufacturer_id` with `response_manufacturer_hex`. Periodic advertising (an extended set that is neither connectable nor scannable): `periodic_interval_ms` (100 to 81898), `periodic_include_tx_power`, `periodic_manufacturer_id` with `periodic_manufacturer_hex`, `periodic_service_data_uuid` with `periodic_service_data_hex`. `seconds` (0 to 655, 0 until stopped) and `max_events` (0 to 255) end the set; the `advertising_set` event reports it `started` (with `tx_power`, the power the controller chose, in dBm) and `stopped` (`reason`: `elapsed`, `requested` or `adapter`). A combination Android refuses (a legacy set that is anonymous, connectable and not scannable, or not on the 1M PHY; an extended set that is both connectable and scannable, or connectable and anonymous) answers `bad_value` with the rule.
+
+**Restoration and accessory setup.** iOS restores Bluetooth by relaunching the app (see State restoration above). Android's own way is two system services that start the app's process for Bluetooth, and both are here. `associate`, `associations` and `disassociate` are the system's accessory picker on both platforms: CompanionDeviceManager on Android, AccessorySetupKit on iOS (see "iOS, associate" below).
+
+| Route            | Parameters                                                                 | Answer `data`                     | Answer variable | Callback |
+| ---------------- | -------------------------------------------------------------------------- | --------------------------------- | --- | --- |
+| `wake_start`     | `services`, `names`, `manufacturer_id` with `manufacturer_hex` (as `scan_start`; at least one is required), `mode` (default `low_power`) | `state`, `filters` | `bleWakeStart` | `onBleWakeStart` |
+| `wake_stop`      | none                                                                       | `state`, `stopped`                | `bleWakeStop` | `onBleWakeStop` |
+| `associate`      | `services` (one UUID), `manufacturer_id` (0 to 65535) with `manufacturer_hex` (the bytes the advertised manufacturer data starts with; needs the id), `name`, `address` (Android; like `00:11:22:AA:BB:CC`), `single` (Android; default `true`), `migrate` (iOS; the `id` of a device the app already uses; Android answers `platform_limit`). iOS needs `services` or `manufacturer_id`, and a company identifier needs `name` or `manufacturer_hex` too (`bad_value` otherwise) | `association`, `address`, `name`; on iOS also `id` (the device id the other routes take; `address` is `null`) | `bleAssociate` | `onBleAssociate` |
+| `associations`   | none                                                                       | `associations` (each `association`, `address`, `name`, `observing`; on iOS also `id`) | `bleAssociations` | `onBleAssociations` |
+| `disassociate`   | `association` (required)                                                   | `association`, `removed`          | `bleDisassociate` | `onBleDisassociate` |
+| `presence_start` | `association` (required)                                                   | `association`, `observing`        | `blePresenceStart` | `onBlePresenceStart` |
+| `presence_stop`  | `association` (required)                                                   | `association`, `observing`, `stopped` | `blePresenceStop` | `onBlePresenceStop` |
+
+- **Wake scan.** `wake_start` hands a filtered scan to the system with `BluetoothLeScanner.startScan` and a PendingIntent. The scan keeps running after the app's process ends, and the system starts the process when a matching device is found. Each delivery is a `wake` event (`state: "results"` with `devices`, each a `device` record with `id`), kept in the journal and posted to every `server` the app watches, so a page loaded later reads it with `events`. A scan the system ends reports `state: "failed"` with the ScanCallback `error` code. The filters survive a restart of the app's process (`state` answers `wake`). One wake scan runs at a time; `wake_stop` ends it. A wake scan needs a filter (`filter_required` otherwise), so the system starts the app only for the devices it is meant for. On Android 10 and 11 (API 29 and 30) the system finds nothing for a scan that runs without the app unless the app holds `ACCESS_BACKGROUND_LOCATION` (Android, "Bluetooth permissions": "If your app supports a service and can run on Android 10 (API level 29) or Android 11, you must also declare the ACCESS_BACKGROUND_LOCATION permission to discover Bluetooth devices", read 2026-11-26). Location is dashboard-owned, so this module does not declare it: the app declares it with the `background_location_always_and_when_in_use` permission. Only `wake_start`, only on those two API levels, asks for it, as its own request after the foreground grants (Android 11 and later ignore a request that holds a foreground location permission together with the background one; Android, "Request location permissions", read 2026-11-26). Without the declaration `wake_start` answers `unavailable` and names the permission; if the person does not allow it (on Android 11 and later in the app's Settings, "Allow all the time") it answers `permission_denied`. Nothing asks for it at launch or for any other route.
+- **Device presence.** `associate` shows the system's companion device chooser (CompanionDeviceManager) and answers the device the user picked, with its `association` id. Within the route's 25 second time limit the answer carries it; a device picked later is listed by `associations`. `presence_start` asks the system to watch that device. The system starts the app's process when it comes into range or leaves it, and each change is a `presence` event (`association`, `address`, `event`: `appeared`, `disappeared`, `connected` or `disconnected`), kept in the journal and posted like `wake`. Observations survive a restart of the app's process. `disassociate` removes the association. On Android 8 to 12 (API 26 to 32) the platform gives an association no id, so the extension numbers each associated address itself and keeps the numbers in the app's data directory.
+
+`mode` is `low_power`, `balanced` or `low_latency`. A device `id` is the iOS peripheral identifier or the Android MAC address. UUIDs can be 16, 32 or 128 bit in any case; answers always use lower-case 128-bit. `service_n` and `char_n` number equal UUIDs in discovery order. Notifications and indications are both handled by `subscribe`; the answer's `mode` says which the characteristic uses.
 
 ### Events
 
-| Event           | Callback            | Scope      | When                                                         |
-| --------------- | ------------------- | ---------- | ------------------------------------------------------------ |
-| `adapter`       | `onBleAdapter`      | `app`      | Bluetooth turned on or off                                   |
-| `restored`      | `onBleRestored`     | `app`      | iOS restored the Bluetooth state after a relaunch            |
-| `device`        | `onBleDevice`       | `document` | Devices found by a scan, batched every 50 ms                 |
-| `scan_end`      | `onBleScanEnd`      | `document` | A scan ended                                                 |
-| `link`          | `onBleLink`         | `document` | A link connected, is reconnecting, or disconnected           |
-| `value`         | `onBleValue`        | `document` | Notified values, batched every 50 ms                         |
-| `gatt_changed`  | `onBleGattChanged`  | `document` | A device changed its services                                |
-| `central`       | `onBleCentral`      | `document` | A central connected, disconnected, subscribed or unsubscribed |
-| `request`       | `onBleRequest`      | `document` | Writes from centrals, batched                                |
-| `advertise_end` | `onBleAdvertiseEnd` | `document` | Advertising stopped, elapsed, lost the adapter, or failed    |
+| Event              | Callback               | Scope      | When                                                         |
+| ------------------ | ---------------------- | ---------- | ------------------------------------------------------------ |
+| `adapter`          | `onBleAdapter`         | `app`      | Bluetooth turned on or off                                   |
+| `restored`         | `onBleRestored`        | `app`      | iOS restored the Bluetooth state after a relaunch            |
+| `device`           | `onBleDevice`          | `document` | Devices found by a scan, batched every 50 ms                 |
+| `scan_end`         | `onBleScanEnd`         | `document` | A scan ended                                                 |
+| `link`             | `onBleLink`            | `document` | A link connected, is reconnecting, or disconnected           |
+| `value`            | `onBleValue`           | `document` | Notified or indicated values, batched every 50 ms            |
+| `gatt_changed`     | `onBleGattChanged`     | `document` | A device changed its services                                |
+| `central`          | `onBleCentral`         | `document` | A central connected, disconnected, subscribed or unsubscribed |
+| `request`          | `onBleRequest`         | `document` | Writes from centrals, batched                                |
+| `advertise_end`    | `onBleAdvertiseEnd`    | `document` | Advertising stopped, elapsed, lost the adapter, or failed    |
+| `bond`             | `onBleBond`            | `document` | A bond changed (`id`, `state`, `previous`), on Android       |
+| `phy`              | `onBlePhy`             | `document` | The link's PHY changed (`id`, `link`, `tx`, `rx`), on Android |
+| `connection_event` | `onBleConnectionEvent` | `document` | A watched device connected to or disconnected from the system, for any app (`id`, `event`, `name`) |
+| `ancs`             | `onBleAncs`            | `document` | A peripheral's notification-center authorization changed (`id`, `authorized`), on iOS |
+| `att_request`      | `onBleAttRequest`      | `document` | A read or write of a characteristic with flag `a` waits for `respond`, or was answered, expired or dropped |
+| `l2cap`            | `onBleL2cap`           | `document` | An L2CAP channel opened or closed (`channel`, `state`, `role`, `peer`, `psm`, `reason`) |
+| `l2cap_data`       | `onBleL2capData`       | `document` | Bytes received on L2CAP channels, batched every 50 ms         |
+| `advertising_set`  | `onBleAdvertisingSet`  | `document` | An advertising set started or stopped, on Android             |
+| `wake`             | `onBleWake`            | `app`      | The wake scan started, stopped, failed or found devices (`state`, `filters`, `devices`, `error`), on Android |
+| `presence`         | `onBlePresence`        | `app`      | An observed associated device appeared, disappeared, connected or disconnected (`association`, `address`, `event`), on Android |
 
-`restored` carries `peripherals` and `scanning` for the central role, and `services`, `advertising` and `lost` for the server role. Every event is also a journal record, so a page that was not loaded when it happened reads it with `events`. `device` and `value` are batched every 50 ms.
+`restored` carries `peripherals` and `scanning` for the central role, and `services`, `advertising` and `lost` for the server role. Every event is also a journal record, so a page that was not loaded when it happened reads it with `events`.
 
 ### Error codes
 
 A failed `connect` answers `connect_failed`. Its message and the `link` event carry the platform's own error: `error: {domain, code, message, name}`, the CoreBluetooth error on iOS and the GATT status on Android. A known code also gives a readable `reason`, such as `encryption_timeout`.
 
-Besides the standard codes: `busy`, `unavailable`, `permission_denied`, `scan_failed`, `bad_value`, `unknown_device`, `not_connected`, `not_found`, `not_permitted`, `too_long`, `connect_failed`, `connect_timeout`, `gatt_error`, `link_lost`, `filter_required` (a scan in the background needs a service filter), `advertise_failed`, `no_subscribers` and `platform_limit` (this platform has no such API; the message names it).
+Besides the standard codes: `busy`, `unavailable`, `permission_denied`, `scan_failed`, `bad_value`, `unknown_device`, `not_connected`, `not_found`, `not_permitted`, `too_long`, `connect_failed`, `connect_timeout`, `gatt_error`, `link_lost`, `filter_required` (a scan in the background needs a service filter), `advertise_failed`, `no_subscribers`, `l2cap_failed` (the platform did not publish or open the channel; the message carries its error), `associate_failed` (the companion device chooser failed; the message carries the system's reason), `cancelled` (the user closed the chooser), `not_associated` (the association is not this app's), `presence_failed` and `platform_limit` (this platform has no such API; the message names it).
+
+---
+
+## From the retired `bluetooth://` core
+
+The Despia V3 runtime had a built-in `bluetooth://` scheme on iOS only. It has been removed from the runtime; this extension covers all of it on iOS and Android.
+
+| `bluetooth://` | This extension |
+| --- | --- |
+| `state` | `state` (`authorization` and the `adapter` event) |
+| `window.bluetoothActive` | `state` answers `authorization` |
+| `scan?services&duration` | `scan_start?services&seconds` |
+| `stopscan` | `scan_stop` |
+| `connect?id&timeout&auto_connect&server` | `connect?id&seconds&auto&server` (`seconds=0`: no time limit, as before) |
+| `disconnect` | `disconnect` |
+| `discover` | `discover` |
+| `read` | `read` |
+| `write` with `text`, `hex` or `value` | `write` with `text`, `hex` or `b64` |
+| `raw` | `raw` |
+| `subscribe?server`, `unsubscribe` | `subscribe?server`, `unsubscribe` |
+| `rssi` | `rssi` |
+| Server posts `ble_state` and `ble_data` | The same bodies, with a retry queue that survives a restart |
+| Replay queue of 500 events across termination | The journal (2000 records), and `events?run=` for the previous launch |
+| Events `device`, `scanEnd`, `connect`, `discovered`, `data`, `writeComplete`, `rssi`, `state`, `raw` | `device`, `scan_end`, `link`, `value`, `adapter`, and each route's answer |
 
 ---
 
 ## Platform limits
 
-- **iOS.** No scan `mode` and no MTU request (`mtu` answers `requested: false`). No API to drop a central (`central_drop` answers `platform_limit`). An advertisement carries only service UUIDs and a local name, is always connectable, and in the background carries no name. In the background, a scan without a service filter is stopped, and a new one answers `filter_required`.
+Each limit below is a capability the platform has no public API for. The route answers `platform_limit` and names it, or the answer's `applied` reports the option `false`. Sources were read on 2026-11-24.
+
+- **iOS, connection priority and PHY.** CoreBluetooth has no API to request a connection interval or read or set the LE PHY; the system and the peripheral choose them. `priority` and `phy` on a connected device answer `platform_limit` (on a device that is not connected, `not_connected`). Source: [CBPeripheral](https://developer.apple.com/documentation/corebluetooth/cbperipheral).
+- **iOS, bonding.** No API to start, list or remove a bond. The system pairs when a peripheral requires encryption for an attribute the app reads or writes. `bond` and `bonds` answer `platform_limit`. Source: [CBPeripheral](https://developer.apple.com/documentation/corebluetooth/cbperipheral) and [CBCentralManager](https://developer.apple.com/documentation/corebluetooth/cbcentralmanager), which have no bonding API.
+- **iOS, scanning and advertising.** No scan `mode`, `report_delay`, `callback_type`, `match`, `matches`, `legacy` or `phy`, no name or manufacturer filter in the scan itself (the extension filters the results), and no MTU request (`mtu` answers `requested: false`). No API to drop a central (`central_drop` answers `platform_limit`). An advertisement carries only service UUIDs and a local name, is always connectable, has no TX power setting, and in the background carries no name. In the background, a scan without a service filter is stopped, and a new one answers `filter_required`. `system_devices` needs `services`. Sources: [CBCentralManager](https://developer.apple.com/documentation/corebluetooth/cbcentralmanager), [CBPeripheralManager.startAdvertising](https://developer.apple.com/documentation/corebluetooth/cbperipheralmanager/startadvertising(_:)).
+- **iOS, advertising sets.** CBPeripheralManager has one advertisement with service UUIDs and a local name; it has no extended or periodic advertising and no advertising-set API. `advertise_set_start` answers `platform_limit`; use `advertise_start`. Source: [CBPeripheralManager.startAdvertising](https://developer.apple.com/documentation/corebluetooth/cbperipheralmanager/startadvertising(_:)).
+- **iOS, L2CAP and page-answered writes.** `openL2CAPChannel` opens a channel only on a peripheral this app is connected to, so `l2cap_open` needs `connect` first (otherwise `not_connected`), and it has no encryption option: the peripheral's published channel decides. iOS delivers writes with and without response to the same callback, so on iOS every write to a characteristic with flag `a` waits for `respond`. Sources: [CBPeripheral.openL2CAPChannel](https://developer.apple.com/documentation/corebluetooth/cbperipheral/openl2capchannel(_:)), [CBPeripheralManager.respond](https://developer.apple.com/documentation/corebluetooth/cbperipheralmanager/respond(to:withresult:)).
 - **iOS, reads.** A characteristic value and a read answer arrive through the same callback, so a notification that lands while a read of the same characteristic is in flight answers that read.
-- **Android.** No state restoration: links, the server and advertising end with the app's process. Use `keep_alive` to keep links while the app is in the background. With `name`, Android advertises the device's own Bluetooth name. A controller without advertising support answers `platform_limit`.
+- **Android, versions.** `legacy` and `phy` in a scan and the `phy` route need Android 8.0 (API 26). `priority` with `dck` needs Android 14 (API 34). Earlier versions answer `platform_limit`. `requestConnectionPriority` has no completion callback, so `priority` answers once the system accepts the request. Source: [BluetoothGatt](https://developer.android.com/reference/android/bluetooth/BluetoothGatt).
+- **Android, L2CAP and advertising sets.** LE L2CAP channels need Android 10 (API 29: `listenUsingL2capChannel`, `createL2capChannel`); advertising sets need Android 8.0 (API 26: `startAdvertisingSet`). Earlier versions answer `platform_limit`. A set this phone's controller cannot send answers `platform_limit` naming the adapter's own answer: extended advertising (`isLeExtendedAdvertisingSupported`), the Coded PHY (`isLeCodedPhySupported`), the 2M PHY (`isLe2MPhySupported`) or periodic advertising (`isLePeriodicAdvertisingSupported`); a legacy set works on every controller that advertises. Sources: [BluetoothDevice.createL2capChannel](https://developer.android.com/reference/android/bluetooth/BluetoothDevice#createL2capChannel(int)), [BluetoothLeAdvertiser.startAdvertisingSet](https://developer.android.com/reference/android/bluetooth/le/BluetoothLeAdvertiser), [BluetoothAdapter](https://developer.android.com/reference/android/bluetooth/BluetoothAdapter).
+- **Android, connection events.** `connection_event` comes from the system's ACL broadcasts, which carry the device but no service list: `ids` filter, `services` cannot (`applied.services` is `false`). Classic Bluetooth links appear too. Source: [BluetoothDevice.ACTION_ACL_CONNECTED](https://developer.android.com/reference/android/bluetooth/BluetoothDevice#ACTION_ACL_CONNECTED).
+- **Android, bonds.** No public API removes a bond; the user removes it in the system Bluetooth settings. Source: [BluetoothDevice](https://developer.android.com/reference/android/bluetooth/BluetoothDevice) (public `createBond` only).
+- **iOS, wake scan and device presence.** iOS has no scan that outlives the app and no API to observe a device's presence. Its restoration is the relaunch: a `scan_start` with `services` continues in the background and is restored after a relaunch, and a `connect` with `seconds=0` completes when the device comes into range, also after a relaunch (the `restored` event). `wake_start`, `wake_stop`, `presence_start` and `presence_stop` answer `platform_limit` naming this. Source: [CBCentralManager](https://developer.apple.com/documentation/corebluetooth/cbcentralmanager), which has no such API.
+- **iOS, associate.** iOS pairs accessories through AccessorySetupKit (`ASAccessorySession`, iOS 18). `associate` shows the system picker for the one service in `services`, or for the company identifier in `manufacturer_id` (Apple needs a second identifier with a company identifier: `name`, a substring of the advertised name, or `manufacturer_hex`, the bytes the manufacturer data after the company identifier starts with), and `name` narrows either; with `migrate` it carries an `ASMigrationDisplayItem` for a device the app already uses through CoreBluetooth and answers the migrated accessory when the system reports `migrationComplete`; if setting up the picked accessory fails (`pickerSetupFailed`) it answers `associate_failed`, `associations` lists the accessories the person set up for the app, and `disassociate` removes one. Each accessory is numbered like an Android association; `id` is its Bluetooth identifier, which `connect` takes. `address` is refused (`bad_value`): iOS gives an app no Bluetooth address. `presence_start` and `presence_stop` stay `platform_limit`: AccessorySetupKit has no presence observation. The picker needs the app to declare AccessorySetupKit in its Info.plist: `NSAccessorySetupKitSupports` with `Bluetooth`, `NSAccessorySetupBluetoothServices` with the service, and `NSAccessorySetupBluetoothNames` with the name when `name` is used, and `NSAccessorySetupBluetoothCompanyIdentifiers` with each `manufacturer_id` as four hex digits without `0x`, Apple's "two-byte UUID" (`004C` for 76; any other spelling answers `unavailable`) (Apple, "Discovering and configuring accessories": a filter that is not declared crashes the app, so the extension answers `unavailable` before it builds the picker). The extension does not declare them itself, because declaring AccessorySetupKit changes CoreBluetooth for the whole app: people are no longer asked for Bluetooth permission and the central is `poweredOn` only while the app has set-up accessories (Apple, WWDC24 session 10203, "Meet AccessorySetupKit"). An app that wants the picker declares the keys (in the manifest's `ios.app.info_plist` with `ios.app.custom_keys`, or in its own Info.plist); an app that scans for any device leaves them out. Below iOS 18 the routes answer `platform_limit`. The session is activated at launch only when the keys are declared (it shows nothing). Apple: "Don't initialize a CBCentralManager before migration is complete": an app that declares AccessorySetupKit gets no central manager at launch until an accessory was set up through it, so `migrate` can run; call `associate` with `migrate` before any other `ble` route in that run (`unavailable` once a manager exists). `disassociate` answers once the system accepted the removal; `associations` is the truth. Sources, read 2026-11-26: [AccessorySetupKit](https://developer.apple.com/documentation/accessorysetupkit), [ASAccessorySession](https://developer.apple.com/documentation/accessorysetupkit/asaccessorysession), [ASDiscoveryDescriptor](https://developer.apple.com/documentation/accessorysetupkit/asdiscoverydescriptor), [Discovering and configuring accessories](https://developer.apple.com/documentation/accessorysetupkit/discovering-and-configuring-accessories), [NSAccessorySetupKitSupports](https://developer.apple.com/documentation/bundleresources/information-property-list/nsaccessorysetupkitsupports), [NSAccessorySetupBluetoothCompanyIdentifiers](https://developer.apple.com/documentation/bundleresources/information-property-list/nsaccessorysetupbluetoothcompanyidentifiers), [ASMigrationDisplayItem](https://developer.apple.com/documentation/accessorysetupkit/asmigrationdisplayitem).
+- **Android, restoration versions.** The wake scan and `associate` need Android 8.0 (API 26); observing presence needs Android 12 (API 31). Earlier versions answer `platform_limit`. A device without the companion device feature answers `unavailable`. Sources, read 2026-11-25: [BluetoothLeScanner.startScan with a PendingIntent](https://developer.android.com/reference/android/bluetooth/le/BluetoothLeScanner#startScan(java.util.List%3Candroid.bluetooth.le.ScanFilter%3E,%20android.bluetooth.le.ScanSettings,%20android.app.PendingIntent)), [CompanionDeviceManager](https://developer.android.com/reference/android/companion/CompanionDeviceManager), [CompanionDeviceService](https://developer.android.com/reference/android/companion/CompanionDeviceService).
+- **Android, other.** Links, the GATT server and advertising end with the app's process; the wake scan and device presence above are what the system keeps. Use `keep_alive` to keep links while the app is in the background. With `name`, Android advertises the device's own Bluetooth name. A controller without advertising support answers `platform_limit`. The iOS connect options do not exist.
 - **Both.** One GATT operation runs at a time per link, up to 64 wait, and each has a 10 second timeout that closes the link. Writes are at most 512 bytes. A write without response means the bytes were handed to the system, not that they were delivered.
 
 ## License

@@ -23,11 +23,15 @@ import org.json.JSONArray;
 import org.json.JSONException;
 import org.json.JSONObject;
 
+import java.io.File;
+import java.io.FileOutputStream;
 import java.util.ArrayList;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.UUID;
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.Executors;
 
 /**
  * Universal Bluetooth LE for the page: scan, connect, GATT client, GATT server, advertising, the
@@ -55,17 +59,28 @@ public final class BleExtension implements NativeExtension, BleCore.Port {
     private boolean radioStarted;
     private ComponentActivity registeredOn;
     private ActivityResultLauncher<String[]> permission;
+    private BleRestore restore;
+    /** The created extension, for the wake receiver and the presence service the system starts the process for. */
+    static volatile BleExtension instance;
     private int startedActivities;
     /** The route waiting for a permission answer; one at a time. */
     private Attempt pending;
     private int nextCall;
     private final Map<Integer, Waiting> calls = new HashMap<>();
+    private ServerMirror mirror;
+    /** The disk-durable journal: {@code ble/journal.jsonl} (this run) and {@code ble/journal-prev.jsonl}. */
+    private File journalFile;
+    private final ExecutorService journalIo = Executors.newSingleThreadExecutor();
+    private boolean persistPosted;
+    static final long PERSIST_MS = 250;
 
     private static final class Attempt {
         final ExtCall call;
         final ExtResult.Callback reply;
         final String role;
         boolean ended;
+        /** ACCESS_BACKGROUND_LOCATION was already asked for (API 29 and 30 take it as its own request). */
+        boolean backgroundAsked;
 
         Attempt(ExtCall call, ExtResult.Callback reply, String role) {
             this.call = call;
@@ -87,8 +102,121 @@ public final class BleExtension implements NativeExtension, BleCore.Port {
     @Override
     public void onCreate(ExtContext context) {
         ctx = context;
-        core = new BleCore(this, "android", UUID.randomUUID().toString());
+        String run = UUID.randomUUID().toString();
+        core = new BleCore(this, "android", run);
         radio = new AndroidRadio(context.app(), main, core);
+        mirror = new ServerMirror(context, main);
+        openJournal(run);
+        restore = new BleRestore(context.app(), new File(ctx.dataDir(), "ble"), chooser);
+        core.loadWake(restore.savedWake());
+        core.loadObserving(restore.savedObserving());
+        instance = this;
+    }
+
+    // ---- Android restoration: what the system delivers to a process it started -----------------------
+
+    /** The companion device chooser's end (BleRestore, main thread). */
+    private final BleRestore.Chooser chooser = (request, info, err) -> core.associated(request, info, err);
+
+    /** The wake scan's PendingIntent delivery (BleWakeReceiver, main thread). */
+    void wakeDelivered(List<Map<String, Object>> devices, int error) {
+        core.wakeDelivered(devices, error);
+    }
+
+    /** A CompanionDeviceService presence change (BlePresenceService, main thread). */
+    void presenceEvent(int association, String address, String event) {
+        core.presenceEvent(association, address, event);
+        restore.saveObserving(core.observingList());
+    }
+
+    String addressOf(int association) {
+        return restore.addressOf(association);
+    }
+
+    int idForAddress(String address) {
+        return restore.idForAddress(address);
+    }
+
+    /**
+     * Launch: the previous process's journal becomes {@code events?run=<previousRun>}; this run gets a
+     * fresh file. Reading a file starts no radio (nothing starts at launch).
+     */
+    private void openJournal(String run) {
+        File dir = new File(ctx.dataDir(), "ble");
+        //noinspection ResultOfMethodCallIgnored
+        dir.mkdirs();
+        journalFile = new File(dir, "journal.jsonl");
+        File prev = new File(dir, "journal-prev.jsonl");
+        try {
+            if (journalFile.exists()) {
+                String[] lines = ServerMirror.readText(journalFile).split("\n");
+                String prevRun = lines.length == 0 || lines[0].isEmpty() ? null : new JSONObject(lines[0]).optString("run", null);
+                List<Map<String, Object>> records = new ArrayList<>();
+                for (int i = 1; i < lines.length; i++) {
+                    if (lines[i].isEmpty()) continue;
+                    try {
+                        records.add(fromJson(new JSONObject(lines[i])));
+                    } catch (JSONException torn) {
+                        // The last line of a process that died mid-write: everything before it stands.
+                    }
+                }
+                if (prevRun != null) core.loadPrevious(prevRun, records);
+                //noinspection ResultOfMethodCallIgnored
+                journalFile.renameTo(prev);
+            }
+            writeJournal(new JSONObject().put("run", run).toString() + "\n", false);
+        } catch (Exception e) {
+            ctx.log("journal file: " + e.getClass().getSimpleName());
+        }
+    }
+
+    private void writeJournal(String text, boolean append) {
+        journalIo.execute(() -> {
+            try (FileOutputStream out = new FileOutputStream(journalFile, append)) {
+                out.write(text.getBytes(java.nio.charset.StandardCharsets.UTF_8));
+                out.getFD().sync();
+            } catch (Exception e) {
+                ctx.log("journal file: " + e.getClass().getSimpleName());
+            }
+        });
+    }
+
+    /** Appends the records since the last call, or rewrites the bounded window (BleCore.journalToPersist). */
+    @SuppressWarnings("unchecked")
+    private void persistJournal() {
+        persistPosted = false;
+        Object[] j = core.journalToPersist();
+        if (j == null) return;
+        StringBuilder b = new StringBuilder();
+        try {
+            boolean rewrite = (Boolean) j[1];
+            if (rewrite) b.append(new JSONObject().put("run", core.run).toString()).append('\n');
+            for (Map<String, Object> r : (List<Map<String, Object>>) j[0]) b.append(toJson(r).toString()).append('\n');
+            writeJournal(b.toString(), !rewrite);
+        } catch (JSONException e) {
+            ctx.log("journal record is not JSON: " + e.getMessage());
+        }
+    }
+
+    @SuppressWarnings("unchecked")
+    static Map<String, Object> fromJson(JSONObject o) throws JSONException {
+        Map<String, Object> m = BleCore.obj();
+        for (java.util.Iterator<String> it = o.keys(); it.hasNext(); ) {
+            String k = it.next();
+            m.put(k, fromJsonValue(o.opt(k)));
+        }
+        return m;
+    }
+
+    private static Object fromJsonValue(Object v) throws JSONException {
+        if (v instanceof JSONObject) return fromJson((JSONObject) v);
+        if (v instanceof JSONArray) {
+            List<Object> l = new ArrayList<>();
+            JSONArray a = (JSONArray) v;
+            for (int i = 0; i < a.length(); i++) l.add(fromJsonValue(a.opt(i)));
+            return l;
+        }
+        return v == JSONObject.NULL ? null : v;
     }
 
     @Override
@@ -110,15 +238,25 @@ public final class BleExtension implements NativeExtension, BleCore.Port {
                         if (!at.call.isActive()) {
                             // A late Allow: the page already has the timeout. Start nothing.
                             finish(at, ExtResult.error("timeout", "Bluetooth was allowed after the route timed out"));
-                        } else if (missingRuntime(at.role).isEmpty()) {
-                            proceed(at);
                         } else {
-                            finish(at, ExtResult.error("permission_denied", "Bluetooth access was denied"));
+                            List<String> still = missingRuntime(at.role);
+                            if (still.isEmpty()) {
+                                proceed(at);
+                            } else if (!at.backgroundAsked && still.size() == 1 && BleCore.BACKGROUND_LOCATION.equals(still.get(0))) {
+                                // The foreground grants are in: background location is asked on its own.
+                                request(at, still);
+                            } else if (still.contains(BleCore.BACKGROUND_LOCATION)) {
+                                finish(at, ExtResult.error("permission_denied", BACKGROUND_DENIED));
+                            } else {
+                                finish(at, ExtResult.error("permission_denied", "Bluetooth access was denied"));
+                            }
                         }
                     });
+            restore.attach(a, ctx.resultKey("associate"));
         } else if (event == ActivityEvent.DESTROYED && registeredOn == a && permission != null) {
             permission.unregister();
             permission = null;
+            restore.detach();
             registeredOn = null;
             // Recreated (configuration, or the system reclaimed it): the permission answer reaches
             // the launcher the new activity registers under the same key, so the route waits.
@@ -133,15 +271,33 @@ public final class BleExtension implements NativeExtension, BleCore.Port {
     static String role(String route, Map<String, Object> params) {
         switch (route) {
             case "scan_start":
+            case "wake_stop":
                 return "scan";
+            case "wake_start":
+                return "wake";
             case "advertise_start":
             case "advertise_stop":
+            case "advertise_set_start":
+            case "advertise_set_stop":
                 return "advertise";
             case "service_add":
             case "service_remove":
             case "notify":
+            case "respond":
             case "central_drop":
+            case "l2cap_publish":
+            case "l2cap_unpublish":
+            case "l2cap_open":
+            case "l2cap_send":
+            case "l2cap_close":
             case "connect":
+            case "raw":
+            case "priority":
+            case "phy":
+            case "bond":
+            case "bonds":
+            case "system_devices":
+            case "connection_events":
             case "disconnect":
             case "discover":
             case "read":
@@ -175,13 +331,51 @@ public final class BleExtension implements NativeExtension, BleCore.Port {
         List<String> runtime = missingRuntime(role);
         if (installTime != null) {
             finish(at, ExtResult.error("unavailable", installTime + " is not declared in this build"));
+        } else if (!runtime.isEmpty() && runtime.contains(BleCore.BACKGROUND_LOCATION) && !declares(BleCore.BACKGROUND_LOCATION)) {
+            // Android 10 and 11: the wake scan finds nothing without it, and a manifest this extension
+            // cannot change decides whether it exists (location is dashboard-owned).
+            finish(at, ExtResult.error("unavailable", BleCore.BACKGROUND_LOCATION + " is not declared in this build: on Android 10 and 11 "
+                    + "a wake scan discovers nothing without it; declare the background_location_always_and_when_in_use permission"));
         } else if (runtime.isEmpty()) {
             proceed(at);
         } else if (permission != null) {
-            permission.launch(runtime.toArray(new String[0]));
+            request(at, runtime);
         } else {
             finish(at, ExtResult.error("permission_denied", "Bluetooth access is not granted"));
         }
+    }
+
+    static final String BACKGROUND_DENIED = "ACCESS_BACKGROUND_LOCATION was not granted: on Android 10 and 11 a wake scan "
+            + "discovers nothing without it (set the app's Location permission to Allow all the time in Settings)";
+
+    /**
+     * Asks for the missing grants. Android 11 and later ignore a request that holds a foreground location
+     * permission together with the background one ("If you request a foreground location permission and the
+     * background location permission at the same time, the system ignores the request and doesn't grant your
+     * app either permission", Android, "Request location permissions", read 2026-11-26), so the background
+     * grant goes by itself, after the others.
+     */
+    private void request(Attempt at, List<String> missing) {
+        List<String> now = new ArrayList<>(missing);
+        if (now.size() > 1) now.remove(BleCore.BACKGROUND_LOCATION);
+        if (now.contains(BleCore.BACKGROUND_LOCATION)) at.backgroundAsked = true;
+        permission.launch(now.toArray(new String[0]));
+    }
+
+    /** Whether the app's manifest declares {@code name} (declared, not necessarily granted). */
+    private boolean declares(String name) {
+        try {
+            Context app = ctx.app();
+            PackageInfo info = app.getPackageManager().getPackageInfo(app.getPackageName(), PackageManager.GET_PERMISSIONS);
+            if (info.requestedPermissions != null) {
+                for (String p : info.requestedPermissions) {
+                    if (name.equals(p)) return true;
+                }
+            }
+        } catch (PackageManager.NameNotFoundException | RuntimeException e) {
+            ctx.log("declared permissions unreadable: " + e.getClass().getSimpleName());
+        }
+        return false;
     }
 
     /** The permission is in place: hand the route to the core. Never leaves the slot taken. */
@@ -213,6 +407,28 @@ public final class BleExtension implements NativeExtension, BleCore.Port {
         radio.start();
         core.adapter(radio.adapterState());
         core.background(startedActivities == 0);
+        mirror.pump();
+    }
+
+    /** The scan options the page gave, by the core's keys (BleCore.SCAN_OPTION_KEYS). */
+    private static Map<String, Object> scanOptions(ExtCall call) {
+        Map<String, Object> o = BleCore.obj();
+        for (String k : BleCore.SCAN_OPTION_KEYS) {
+            Object v = call.params.get(k);
+            if (v != null) o.put(k, v);
+        }
+        return o;
+    }
+
+    /** The advertise_set_start parameters, typed as the core reads them (the manifest checked each type). */
+    private static Map<String, Object> setParams(ExtCall call) {
+        Map<String, Object> raw = BleCore.obj();
+        for (Map.Entry<String, Object> e : call.params.entrySet()) {
+            Object v = e.getValue();
+            if (v instanceof Number) raw.put(e.getKey(), ((Number) v).intValue());
+            else if (v instanceof Boolean || v instanceof String) raw.put(e.getKey(), v);
+        }
+        return raw;
     }
 
     private static int num(ExtCall call, String name, int dflt) {
@@ -240,11 +456,12 @@ public final class BleExtension implements NativeExtension, BleCore.Port {
                 state(c);
                 return;
             case "events":
-                core.events(c, num(call, "after", 0), num(call, "max", 200));
+                core.events(c, num(call, "after", 0), num(call, "max", 200), str(call, "run"));
                 return;
             case "scan_start":
                 core.scanStart(c, str(call, "services"), num(call, "seconds", 0), flag(call, "duplicates", false),
-                        call.params.containsKey("mode") ? str(call, "mode") : "balanced", startedActivities == 0);
+                        call.params.containsKey("mode") ? str(call, "mode") : "balanced", startedActivities == 0,
+                        str(call, "names"), num(call, "manufacturer_id", -1), str(call, "manufacturer_hex"), scanOptions(call));
                 return;
             case "scan_stop":
                 core.scanStop(c);
@@ -253,11 +470,55 @@ public final class BleExtension implements NativeExtension, BleCore.Port {
                 core.devices(c);
                 return;
             case "connect":
+                if (str(call, "server") != null && id != null) mirror.watchState(id, str(call, "server"));
                 core.connect(c, id, flag(call, "auto", false), num(call, "seconds", 10));
                 return;
             case "disconnect":
                 core.disconnect(c, id);
                 return;
+            case "raw":
+                core.raw(c, id, str(call, "hex"), str(call, "b64"), str(call, "text"), flag(call, "response", true));
+                return;
+            case "priority":
+                core.priority(c, id, call.params.containsKey("level") ? str(call, "level") : "balanced");
+                return;
+            case "phy":
+                core.phy(c, id, str(call, "tx"), str(call, "rx"), call.params.containsKey("coded") ? str(call, "coded") : "none");
+                return;
+            case "bond":
+                bond(c, id);
+                return;
+            case "bonds": {
+                List<Object> l = radio.bonds();
+                if (l == null) reply(c, false, "unavailable", "Bluetooth is " + radio.adapterState(), null);
+                else reply(c, true, null, null, BleCore.obj("devices", l));
+                return;
+            }
+            case "system_devices": {
+                List<Object> l = radio.systemDevices();
+                if (l == null) reply(c, false, "unavailable", "Bluetooth is " + radio.adapterState(), null);
+                else reply(c, true, null, null, BleCore.obj("devices", l));
+                return;
+            }
+            case "connection_events": {
+                List<String> svc = BleCore.uuidList(str(call, "services"));
+                if (svc == null) {
+                    reply(c, false, "bad_value", "services must be up to 20 UUIDs", null);
+                    return;
+                }
+                List<String> ids = new ArrayList<>();
+                String raw = str(call, "ids");
+                if (raw != null) for (String x : raw.split(",")) if (!x.isEmpty()) ids.add(x);
+                String err = radio.connectionEvents(ids);
+                if (err != null) {
+                    int sp = err.indexOf(' ');
+                    reply(c, false, sp < 0 ? err : err.substring(0, sp), sp < 0 ? err : err.substring(sp + 1), null);
+                    return;
+                }
+                reply(c, true, null, null, BleCore.obj("services", new ArrayList<Object>(svc), "ids", new ArrayList<Object>(ids),
+                        "applied", BleCore.obj("services", svc.isEmpty(), "ids", true)));
+                return;
+            }
             case "links":
                 core.links(c);
                 return;
@@ -270,13 +531,20 @@ public final class BleExtension implements NativeExtension, BleCore.Port {
                 return;
             case "write":
                 core.write(c, id, str(call, "service"), num(call, "service_n", 0), str(call, "char"), num(call, "char_n", 0),
-                        str(call, "descriptor"), str(call, "hex"), str(call, "b64"), flag(call, "response", true));
+                        str(call, "descriptor"), str(call, "hex"), str(call, "b64"), flag(call, "response", true), str(call, "text"));
                 return;
             case "subscribe":
-            case "unsubscribe":
+            case "unsubscribe": {
+                String su = BleCore.uuid(str(call, "service")), cu = BleCore.uuid(str(call, "char"));
+                if (id != null && su != null && cu != null) {
+                    String k = BleCore.key(su, num(call, "service_n", 0), cu, num(call, "char_n", 0));
+                    if (!"subscribe".equals(call.route)) mirror.unwatchData(id, k);
+                    else if (str(call, "server") != null) mirror.watchData(id, k, str(call, "server"));
+                }
                 core.subscribe(c, id, str(call, "service"), num(call, "service_n", 0), str(call, "char"), num(call, "char_n", 0),
                         "subscribe".equals(call.route));
                 return;
+            }
             case "rssi":
                 core.rssi(c, id);
                 return;
@@ -293,17 +561,19 @@ public final class BleExtension implements NativeExtension, BleCore.Port {
                 core.services(c);
                 return;
             case "value_set":
-                core.valueSet(c, str(call, "service"), str(call, "char"), num(call, "char_n", 0), str(call, "hex"), str(call, "b64"));
+                core.valueSet(c, str(call, "service"), str(call, "char"), num(call, "char_n", 0), str(call, "hex"), str(call, "b64"),
+                        str(call, "text"));
                 return;
             case "notify":
                 core.notify(c, str(call, "service"), str(call, "char"), num(call, "char_n", 0), str(call, "hex"), str(call, "b64"),
-                        str(call, "central"));
+                        str(call, "central"), str(call, "text"));
                 return;
             case "advertise_start":
                 core.advertiseStart(c, str(call, "services"), str(call, "name"), num(call, "manufacturer_id", -1),
                         str(call, "manufacturer_hex"), str(call, "service_data_uuid"), str(call, "service_data_hex"),
                         flag(call, "connectable", true), call.params.containsKey("mode") ? str(call, "mode") : "balanced",
-                        num(call, "seconds", 0));
+                        num(call, "seconds", 0), str(call, "tx_power"),
+                        call.params.containsKey("include_tx_power") ? flag(call, "include_tx_power", false) : null);
                 return;
             case "advertise_stop":
                 core.advertiseStop(c);
@@ -317,6 +587,61 @@ public final class BleExtension implements NativeExtension, BleCore.Port {
             case "keep_alive":
                 core.keepAlive(c, flag(call, "enabled", false), false);
                 return;
+            case "respond":
+                core.respond(c, num(call, "request", 0), str(call, "status"), str(call, "hex"), str(call, "b64"), str(call, "text"),
+                        num(call, "offset", -1));
+                return;
+            case "l2cap_publish":
+                core.l2capPublish(c, flag(call, "encrypted", true));
+                return;
+            case "l2cap_unpublish":
+                core.l2capUnpublish(c, num(call, "psm", 0));
+                return;
+            case "l2cap_open":
+                core.l2capOpen(c, id, num(call, "psm", 0), flag(call, "encrypted", true), num(call, "seconds", 0));
+                return;
+            case "l2cap_send":
+                core.l2capSend(c, num(call, "channel", 0), str(call, "hex"), str(call, "b64"), str(call, "text"));
+                return;
+            case "l2cap_close":
+                core.l2capClose(c, num(call, "channel", 0));
+                return;
+            case "l2cap_channels":
+                core.l2capChannels(c);
+                return;
+            case "advertise_set_start":
+                core.advertiseSetStart(c, setParams(call));
+                return;
+            case "advertise_set_stop":
+                core.advertiseSetStop(c, num(call, "set", 0));
+                return;
+            case "wake_start":
+                core.wakeStart(c, str(call, "services"), str(call, "names"), num(call, "manufacturer_id", -1),
+                        str(call, "manufacturer_hex"), str(call, "mode"));
+                return;
+            case "wake_stop":
+                core.wakeStop(c);
+                return;
+            case "associate": {
+                Map<String, Object> raw = BleCore.obj();
+                for (String k : new String[]{"services", "name", "address", "manufacturer_hex", "migrate"}) if (str(call, k) != null) raw.put(k, str(call, k));
+                if (call.params.get("manufacturer_id") != null) raw.put("manufacturer_id", num(call, "manufacturer_id", -1));
+                if (call.params.get("single") instanceof Boolean) raw.put("single", call.params.get("single"));
+                core.associate(c, raw);
+                return;
+            }
+            case "associations":
+                core.associations(c);
+                return;
+            case "disassociate":
+                core.disassociate(c, num(call, "association", 0));
+                restore.saveObserving(core.observingList());
+                return;
+            case "presence_start":
+            case "presence_stop":
+                core.presence(c, num(call, "association", 0), "presence_start".equals(call.route));
+                restore.saveObserving(core.observingList());
+                return;
             default:
                 calls.remove(c);
                 reply.reply(ExtResult.error("not_registered", call.route));
@@ -327,7 +652,23 @@ public final class BleExtension implements NativeExtension, BleCore.Port {
         Map<String, Object> data = BleCore.obj("state", radio.adapterState(),
                 "authorization", missingRuntime("central").isEmpty() && missingInstallTime("central") == null ? "granted" : "not_granted");
         data.putAll(core.stateFields());
+        data.put("wake", core.wake);
+        data.put("observing", new ArrayList<Object>(core.observingList()));
+        data.put("server", mirror.status());
         reply(c, true, null, null, data);
+    }
+
+    /** createBond; the system shows its pairing prompt and each change is a {@code bond} event. */
+    private void bond(int c, String id) {
+        String r = radio.bond(id);
+        if (r == null) {
+            reply(c, true, null, null, BleCore.obj("id", id, "state", "bonding"));
+        } else if (r.startsWith("=")) {
+            reply(c, true, null, null, BleCore.obj("id", id, "state", r.substring(1)));
+        } else {
+            int sp = r.indexOf(' ');
+            reply(c, false, sp < 0 ? r : r.substring(0, sp), sp < 0 ? r : r.substring(sp + 1), null);
+        }
     }
 
     // ---- permissions ----------------------------------------------------------------------------
@@ -374,8 +715,14 @@ public final class BleExtension implements NativeExtension, BleCore.Port {
     // ---- BleCore.Port: radio ------------------------------------------------------------------------
 
     @Override
-    public String scanStart(int scan, List<String> services, boolean duplicates, String mode) {
-        return radio.scanStart(scan, services, duplicates, mode);
+    public String scanStart(int scan, List<String> services, boolean duplicates, String mode, Map<String, Object> options) {
+        return radio.scanStart(scan, services, duplicates, mode, options, core.scanNames, core.scanManufacturer,
+                core.scanManufacturerPrefix);
+    }
+
+    @Override
+    public String writable(String id, int gen, boolean withResponse) {
+        return radio.writable(id, gen, withResponse);
     }
 
     @Override
@@ -440,6 +787,81 @@ public final class BleExtension implements NativeExtension, BleCore.Port {
     }
 
     @Override
+    public String attRespond(int epoch, int request, String status, int offset, byte[] data) {
+        return radio.attRespond(epoch, request, status, offset, data);
+    }
+
+    @Override
+    public String l2capPublish(int epoch, int t, boolean encrypted) {
+        return radio.l2capPublish(epoch, t, encrypted);
+    }
+
+    @Override
+    public void l2capUnpublish(int psm) {
+        radio.l2capUnpublish(psm);
+    }
+
+    @Override
+    public String l2capOpen(int epoch, int channel, String id, int psm, boolean encrypted) {
+        return radio.l2capOpen(epoch, channel, id, psm, encrypted);
+    }
+
+    @Override
+    public String l2capSend(int channel, byte[] data) {
+        return radio.l2capSend(channel, data);
+    }
+
+    @Override
+    public void l2capClose(int channel) {
+        radio.l2capClose(channel);
+    }
+
+    @Override
+    public String advertiseSetStart(int epoch, int set, Map<String, Object> params) {
+        return radio.advertiseSetStart(epoch, set, params);
+    }
+
+    @Override
+    public void advertiseSetStop(int set) {
+        radio.advertiseSetStop(set);
+    }
+
+    @Override
+    public String wakeStart(Map<String, Object> filters, String mode) {
+        return restore.wakeStart(filters, mode);
+    }
+
+    @Override
+    public void wakeStop() {
+        restore.wakeStop();
+    }
+
+    @Override
+    public void wakeSave(Map<String, Object> filters) {
+        restore.saveWake(filters);
+    }
+
+    @Override
+    public String associate(int request, Map<String, Object> params) {
+        return restore.associate(request, params, main);
+    }
+
+    @Override
+    public Object associations() {
+        return restore.associations();
+    }
+
+    @Override
+    public String disassociate(int association) {
+        return restore.disassociate(association);
+    }
+
+    @Override
+    public String presence(boolean start, int association) {
+        return restore.presence(start, association);
+    }
+
+    @Override
     public void persist(Map<String, Object> snapshot) {
         // iOS only: Android keeps no server file (the GATT server and advertising end with the process).
     }
@@ -468,6 +890,11 @@ public final class BleExtension implements NativeExtension, BleCore.Port {
             ctx.emit(event, toJson(data));
         } catch (JSONException e) {
             ctx.log("event " + event + " is not JSON: " + e.getMessage());
+        }
+        mirror.onEvent(event, data, startedActivities == 0);
+        if (!persistPosted) {
+            persistPosted = true;
+            main.postDelayed(this::persistJournal, PERSIST_MS);
         }
     }
 

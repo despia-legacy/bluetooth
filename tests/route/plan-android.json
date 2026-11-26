@@ -1,0 +1,194 @@
+[
+ {
+  "cmd": "extension://ble/state",
+  "var": "bleState"
+ },
+ {
+  "cmd": "extension://ble/events?after=0&max=5",
+  "var": "bleEvents"
+ },
+ {
+  "cmd": "extension://ble/scan_start?services=180d&seconds=1&names=HR&callback_type=all",
+  "var": "bleScanStart"
+ },
+ {
+  "cmd": "extension://ble/scan_stop",
+  "var": "bleScanStop"
+ },
+ {
+  "cmd": "extension://ble/devices",
+  "var": "bleDevices"
+ },
+ {
+  "cmd": "extension://ble/connect?id=AA%3ABB%3ACC%3ADD%3AEE%3A01&seconds=2",
+  "var": "bleConnect"
+ },
+ {
+  "cmd": "extension://ble/disconnect?id=AA%3ABB%3ACC%3ADD%3AEE%3A01",
+  "var": "bleDisconnect"
+ },
+ {
+  "cmd": "extension://ble/links",
+  "var": "bleLinks"
+ },
+ {
+  "cmd": "extension://ble/discover?id=AA%3ABB%3ACC%3ADD%3AEE%3A01",
+  "var": "bleDiscover"
+ },
+ {
+  "cmd": "extension://ble/read?id=AA%3ABB%3ACC%3ADD%3AEE%3A01&service=180d&char=2a37",
+  "var": "bleRead"
+ },
+ {
+  "cmd": "extension://ble/write?id=AA%3ABB%3ACC%3ADD%3AEE%3A01&service=180d&char=2a37&text=hi&response=false",
+  "var": "bleWrite"
+ },
+ {
+  "cmd": "extension://ble/raw?id=AA%3ABB%3ACC%3ADD%3AEE%3A01&text=hi",
+  "var": "bleRaw"
+ },
+ {
+  "cmd": "extension://ble/subscribe?id=AA%3ABB%3ACC%3ADD%3AEE%3A01&service=180d&char=2a37",
+  "var": "bleSubscribe"
+ },
+ {
+  "cmd": "extension://ble/unsubscribe?id=AA%3ABB%3ACC%3ADD%3AEE%3A01&service=180d&char=2a37",
+  "var": "bleUnsubscribe"
+ },
+ {
+  "cmd": "extension://ble/rssi?id=AA%3ABB%3ACC%3ADD%3AEE%3A01",
+  "var": "bleRssi"
+ },
+ {
+  "cmd": "extension://ble/mtu?id=AA%3ABB%3ACC%3ADD%3AEE%3A01&size=185",
+  "var": "bleMtu"
+ },
+ {
+  "cmd": "extension://ble/priority?id=AA%3ABB%3ACC%3ADD%3AEE%3A01&level=high",
+  "var": "blePriority"
+ },
+ {
+  "cmd": "extension://ble/phy?id=AA%3ABB%3ACC%3ADD%3AEE%3A01",
+  "var": "blePhy"
+ },
+ {
+  "cmd": "extension://ble/bond?id=AA%3ABB%3ACC%3ADD%3AEE%3A01",
+  "var": "bleBond"
+ },
+ {
+  "cmd": "extension://ble/bonds",
+  "var": "bleBonds"
+ },
+ {
+  "cmd": "extension://ble/system_devices?services=180d",
+  "var": "bleSystemDevices"
+ },
+ {
+  "cmd": "extension://ble/connection_events?services=180d",
+  "var": "bleConnectionEvents"
+ },
+ {
+  "cmd": "extension://ble/service_add?uuid=fff0&chars=fff1~rn~00",
+  "var": "bleServiceAdd"
+ },
+ {
+  "cmd": "extension://ble/service_remove?uuid=fff9",
+  "var": "bleServiceRemove"
+ },
+ {
+  "cmd": "extension://ble/services",
+  "var": "bleServices"
+ },
+ {
+  "cmd": "extension://ble/value_set?service=fff0&char=fff1&hex=01",
+  "var": "bleValueSet"
+ },
+ {
+  "cmd": "extension://ble/notify?service=fff0&char=fff1&hex=02",
+  "var": "bleNotify"
+ },
+ {
+  "cmd": "extension://ble/advertise_start?name=T&seconds=1",
+  "var": "bleAdvertiseStart"
+ },
+ {
+  "cmd": "extension://ble/advertise_stop",
+  "var": "bleAdvertiseStop"
+ },
+ {
+  "cmd": "extension://ble/centrals",
+  "var": "bleCentrals"
+ },
+ {
+  "cmd": "extension://ble/central_drop?central=AA%3ABB%3ACC%3ADD%3AEE%3A01",
+  "var": "bleCentralDrop"
+ },
+ {
+  "cmd": "extension://ble/keep_alive?enabled=false",
+  "var": "bleKeepAlive"
+ },
+ {
+  "cmd": "extension://ble/respond?request=1&status=unlikely",
+  "var": "bleRespond"
+ },
+ {
+  "cmd": "extension://ble/l2cap_publish?encrypted=true",
+  "var": "bleL2capPublish"
+ },
+ {
+  "cmd": "extension://ble/l2cap_unpublish?psm=200",
+  "var": "bleL2capUnpublish"
+ },
+ {
+  "cmd": "extension://ble/l2cap_open?id=AA%3ABB%3ACC%3ADD%3AEE%3A01&psm=128&seconds=2",
+  "var": "bleL2capOpen"
+ },
+ {
+  "cmd": "extension://ble/l2cap_send?channel=1&hex=00",
+  "var": "bleL2capSend"
+ },
+ {
+  "cmd": "extension://ble/l2cap_close?channel=1",
+  "var": "bleL2capClose"
+ },
+ {
+  "cmd": "extension://ble/l2cap_channels",
+  "var": "bleL2capChannels"
+ },
+ {
+  "cmd": "extension://ble/advertise_set_start?connectable=true&tx_power_dbm=20&seconds=1",
+  "var": "bleAdvertiseSetStart"
+ },
+ {
+  "cmd": "extension://ble/advertise_set_stop?set=1",
+  "var": "bleAdvertiseSetStop"
+ },
+ {
+  "cmd": "extension://ble/wake_start?services=180d",
+  "var": "bleWakeStart"
+ },
+ {
+  "cmd": "extension://ble/wake_stop",
+  "var": "bleWakeStop"
+ },
+ {
+  "cmd": "extension://ble/associations",
+  "var": "bleAssociations"
+ },
+ {
+  "cmd": "extension://ble/presence_start?association=1",
+  "var": "blePresenceStart"
+ },
+ {
+  "cmd": "extension://ble/presence_stop?association=1",
+  "var": "blePresenceStop"
+ },
+ {
+  "cmd": "extension://ble/disassociate?association=1",
+  "var": "bleDisassociate"
+ },
+ {
+  "cmd": "extension://ble/associate?services=180d",
+  "var": "bleAssociate"
+ }
+]

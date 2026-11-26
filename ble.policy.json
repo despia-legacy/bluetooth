@@ -1,1 +1,28 @@
-{}
+{
+  "$comment": "Bluetooth LE. Android: BlePresenceService is exported only to the system, guarded by BIND_COMPANION_DEVICE_SERVICE, with the android.companion.CompanionDeviceService action, so CompanionDeviceManager can bind it for an observed associated device (presence_start). BleLinkService and BleWakeReceiver are not exported.",
+  "exposed_components": {
+    "android": [
+      {
+        "enabled": null,
+        "exported": true,
+        "intent_filters": [
+          {
+            "attrs": {},
+            "children": [
+              {
+                "attrs": {
+                  "name": "android.companion.CompanionDeviceService"
+                },
+                "tag": "action"
+              }
+            ],
+            "tag": "intent-filter"
+          }
+        ],
+        "name": "despia.ext.ble.BlePresenceService",
+        "permission": "android.permission.BIND_COMPANION_DEVICE_SERVICE",
+        "tag": "service"
+      }
+    ]
+  }
+}
