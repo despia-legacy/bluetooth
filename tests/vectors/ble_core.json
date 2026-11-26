@@ -2053,7 +2053,8 @@
               "seconds": 10,
               "out": [
                 "connect AA:BB:CC:DD:EE:01 1 true false",
-                "timer connect 1 10000"
+                "timer connect 1 10000",
+                "links_save [{\"id\":\"AA:BB:CC:DD:EE:01\",\"auto\":true,\"subscriptions\":[],\"options\":[]}]"
               ]
             },
             {
@@ -2096,7 +2097,8 @@
                 "mode": "notify"
               },
               "out": [
-                "reply 2 ok {\"subscribed\":true,\"mode\":\"notify\"}"
+                "reply 2 ok {\"subscribed\":true,\"mode\":\"notify\"}",
+                "links_save [{\"id\":\"AA:BB:CC:DD:EE:01\",\"auto\":true,\"subscriptions\":[\"0000180d-0000-1000-8000-00805f9b34fb#0/00002a37-0000-1000-8000-00805f9b34fb#0\"],\"options\":[]}]"
               ]
             },
             {
@@ -2169,7 +2171,8 @@
               "out": [
                 "close AA:BB:CC:DD:EE:01 2",
                 "timer close 2 2000",
-                "emit link {\"id\":\"AA:BB:CC:DD:EE:01\",\"link\":2,\"state\":\"disconnected\",\"reason\":\"requested\"}"
+                "emit link {\"id\":\"AA:BB:CC:DD:EE:01\",\"link\":2,\"state\":\"disconnected\",\"reason\":\"requested\"}",
+                "links_save []"
               ]
             },
             {
@@ -2208,7 +2211,8 @@
               "seconds": 10,
               "out": [
                 "connect AA:BB:CC:DD:EE:01 1 true false",
-                "timer connect 1 10000"
+                "timer connect 1 10000",
+                "links_save [{\"id\":\"AA:BB:CC:DD:EE:01\",\"auto\":true,\"subscriptions\":[],\"options\":[]}]"
               ]
             },
             {
@@ -2251,7 +2255,8 @@
                 "mode": "notify"
               },
               "out": [
-                "reply 2 ok {\"subscribed\":true,\"mode\":\"notify\"}"
+                "reply 2 ok {\"subscribed\":true,\"mode\":\"notify\"}",
+                "links_save [{\"id\":\"AA:BB:CC:DD:EE:01\",\"auto\":true,\"subscriptions\":[\"0000180d-0000-1000-8000-00805f9b34fb#0/00002a37-0000-1000-8000-00805f9b34fb#0\"],\"options\":[]}]"
               ]
             },
             {
@@ -2381,7 +2386,8 @@
               "seconds": 10,
               "out": [
                 "connect AA:BB:CC:DD:EE:02 1 true false",
-                "timer connect 1 10000"
+                "timer connect 1 10000",
+                "links_save [{\"id\":\"AA:BB:CC:DD:EE:02\",\"auto\":true,\"subscriptions\":[],\"options\":[]}]"
               ]
             },
             {
@@ -2421,7 +2427,8 @@
               "id": "AA:BB:CC:DD:EE:02",
               "seconds": 4,
               "out": [
-                "timer pending 1 4000"
+                "timer pending 1 4000",
+                "links_save []"
               ]
             },
             {
@@ -6525,6 +6532,7 @@
               "out": [
                 "connect AA:BB:CC:DD:EE:01 1 false true",
                 "emit link {\"id\":\"AA:BB:CC:DD:EE:01\",\"link\":1,\"state\":\"connecting\",\"reason\":\"requested\"}",
+                "links_save [{\"id\":\"AA:BB:CC:DD:EE:01\",\"auto\":false,\"subscriptions\":[],\"options\":[]}]",
                 "reply 1 ok {\"id\":\"AA:BB:CC:DD:EE:01\",\"link\":1,\"state\":\"connecting\",\"mtu\":23}"
               ]
             },
@@ -8733,6 +8741,1011 @@
                 "associations",
                 "reply 12 error unavailable"
               ]
+            }
+          ]
+        }
+      ]
+    },
+    "bosch": {
+      "row": "BL-P16",
+      "scenarios": [
+        {
+          "name": "bosch_subscribe_then_writes_after_each_subscribe_and_every_android",
+          "platform": "android",
+          "steps": [
+            {
+              "do": "adapter",
+              "state": "on",
+              "out": [
+                "emit adapter {\"state\":\"on\",\"epoch\":1}"
+              ]
+            },
+            {
+              "do": "connect",
+              "call": 1,
+              "id": "AA:BB:CC:DD:EE:01",
+              "auto": true,
+              "seconds": 10,
+              "out": [
+                "connect AA:BB:CC:DD:EE:01 1 true false",
+                "timer connect 1 10000",
+                "links_save [{\"id\":\"AA:BB:CC:DD:EE:01\",\"auto\":true,\"subscriptions\":[],\"options\":[]}]"
+              ]
+            },
+            {
+              "do": "connected",
+              "id": "AA:BB:CC:DD:EE:01",
+              "gen": 1,
+              "mtu": 23,
+              "out": [
+                "op AA:BB:CC:DD:EE:01 1 1 mtu - - - 517",
+                "timer op 1 10000"
+              ]
+            },
+            {
+              "do": "mtu_changed",
+              "id": "AA:BB:CC:DD:EE:01",
+              "gen": 1,
+              "mtu": 247,
+              "out": [
+                "emit link {\"id\":\"AA:BB:CC:DD:EE:01\",\"link\":1,\"state\":\"connected\",\"reason\":\"requested\",\"resubscribed\":0,\"failed\":0}",
+                "reply 1 ok {\"id\":\"AA:BB:CC:DD:EE:01\",\"link\":1,\"state\":\"connected\",\"mtu\":247}"
+              ]
+            },
+            {
+              "do": "subscribe",
+              "call": 2,
+              "id": "AA:BB:CC:DD:EE:01",
+              "service": "02a6c0d0-0451-4000-b000-fb3210111989",
+              "char": "02a6c0d1-0451-4000-b000-fb3210111989",
+              "options": {
+                "mode": "indicate",
+                "then_hex": "c0550201001a",
+                "then_every": 240
+              },
+              "out": [
+                "op AA:BB:CC:DD:EE:01 1 2 sub 02a6c0d0-0451-4000-b000-fb3210111989#0/02a6c0d1-0451-4000-b000-fb3210111989#0 - - 2",
+                "timer op 2 10000"
+              ]
+            },
+            {
+              "do": "op_done",
+              "id": "AA:BB:CC:DD:EE:01",
+              "gen": 1,
+              "op": 2,
+              "data": {
+                "mode": "indicate"
+              },
+              "out": [
+                "reply 2 ok {\"subscribed\":true,\"mode\":\"indicate\"}",
+                "op AA:BB:CC:DD:EE:01 1 3 write 02a6c0d0-0451-4000-b000-fb3210111989#0/02a6c0d1-0451-4000-b000-fb3210111989#0 - c0550201001a 0",
+                "timer op 3 10000",
+                "timer then 1 240000",
+                "links_save [{\"id\":\"AA:BB:CC:DD:EE:01\",\"auto\":true,\"subscriptions\":[\"02a6c0d0-0451-4000-b000-fb3210111989#0/02a6c0d1-0451-4000-b000-fb3210111989#0\"],\"options\":[{\"key\":\"02a6c0d0-0451-4000-b000-fb3210111989#0/02a6c0d1-0451-4000-b000-fb3210111989#0\",\"mode\":2,\"hex\":\"c0550201001a\",\"response\":true,\"every\":240,\"target\":null}]}]"
+              ]
+            },
+            {
+              "do": "op_done",
+              "id": "AA:BB:CC:DD:EE:01",
+              "gen": 1,
+              "op": 3,
+              "out": [
+                "emit then_write {\"id\":\"AA:BB:CC:DD:EE:01\",\"link\":1,\"service\":\"02a6c0d0-0451-4000-b000-fb3210111989\",\"char\":\"02a6c0d1-0451-4000-b000-fb3210111989\",\"service_n\":0,\"char_n\":0,\"reason\":\"subscribed\",\"state\":\"written\"}"
+              ]
+            },
+            {
+              "do": "timer",
+              "kind": "then",
+              "token": 1,
+              "out": [
+                "op AA:BB:CC:DD:EE:01 1 4 write 02a6c0d0-0451-4000-b000-fb3210111989#0/02a6c0d1-0451-4000-b000-fb3210111989#0 - c0550201001a 0",
+                "timer op 4 10000",
+                "timer then 1 240000"
+              ]
+            },
+            {
+              "do": "op_done",
+              "id": "AA:BB:CC:DD:EE:01",
+              "gen": 1,
+              "op": 4,
+              "code": "gatt_error",
+              "message": "status 133",
+              "out": [
+                "emit then_write {\"id\":\"AA:BB:CC:DD:EE:01\",\"link\":1,\"service\":\"02a6c0d0-0451-4000-b000-fb3210111989\",\"char\":\"02a6c0d1-0451-4000-b000-fb3210111989\",\"service_n\":0,\"char_n\":0,\"reason\":\"every\",\"state\":\"failed\",\"code\":\"gatt_error\",\"error\":\"status 133\"}"
+              ]
+            },
+            {
+              "do": "disconnected",
+              "id": "AA:BB:CC:DD:EE:01",
+              "gen": 1,
+              "reason": "remote",
+              "out": [
+                "emit link {\"id\":\"AA:BB:CC:DD:EE:01\",\"link\":1,\"state\":\"disconnected\",\"reason\":\"remote\"}",
+                "connect AA:BB:CC:DD:EE:01 2 true true",
+                "emit link {\"id\":\"AA:BB:CC:DD:EE:01\",\"link\":2,\"state\":\"reconnecting\",\"reason\":\"auto\"}"
+              ]
+            },
+            {
+              "do": "timer",
+              "kind": "then",
+              "token": 1,
+              "out": [
+                "stale then timer 1"
+              ]
+            },
+            {
+              "do": "connected",
+              "id": "AA:BB:CC:DD:EE:01",
+              "gen": 2,
+              "mtu": 23,
+              "out": [
+                "op AA:BB:CC:DD:EE:01 2 5 mtu - - - 517",
+                "timer op 5 10000"
+              ]
+            },
+            {
+              "do": "mtu_changed",
+              "id": "AA:BB:CC:DD:EE:01",
+              "gen": 2,
+              "mtu": 247,
+              "out": [
+                "op AA:BB:CC:DD:EE:01 2 6 discover - - - 0",
+                "timer op 6 10000"
+              ]
+            },
+            {
+              "do": "op_done",
+              "id": "AA:BB:CC:DD:EE:01",
+              "gen": 2,
+              "op": 6,
+              "data": {
+                "services": []
+              },
+              "out": [
+                "op AA:BB:CC:DD:EE:01 2 7 sub 02a6c0d0-0451-4000-b000-fb3210111989#0/02a6c0d1-0451-4000-b000-fb3210111989#0 - - 2",
+                "timer op 7 10000"
+              ]
+            },
+            {
+              "do": "op_done",
+              "id": "AA:BB:CC:DD:EE:01",
+              "gen": 2,
+              "op": 7,
+              "data": {
+                "mode": "indicate"
+              },
+              "out": [
+                "op AA:BB:CC:DD:EE:01 2 8 write 02a6c0d0-0451-4000-b000-fb3210111989#0/02a6c0d1-0451-4000-b000-fb3210111989#0 - c0550201001a 0",
+                "timer op 8 10000",
+                "timer then 2 240000"
+              ]
+            },
+            {
+              "do": "op_done",
+              "id": "AA:BB:CC:DD:EE:01",
+              "gen": 2,
+              "op": 8,
+              "out": [
+                "emit then_write {\"id\":\"AA:BB:CC:DD:EE:01\",\"link\":2,\"service\":\"02a6c0d0-0451-4000-b000-fb3210111989\",\"char\":\"02a6c0d1-0451-4000-b000-fb3210111989\",\"service_n\":0,\"char_n\":0,\"reason\":\"resubscribed\",\"state\":\"written\"}",
+                "emit link {\"id\":\"AA:BB:CC:DD:EE:01\",\"link\":2,\"state\":\"connected\",\"reason\":\"auto\",\"resubscribed\":1,\"failed\":0}"
+              ]
+            },
+            {
+              "do": "links",
+              "call": 3,
+              "out": [
+                "reply 3 ok {\"links\":[{\"id\":\"AA:BB:CC:DD:EE:01\",\"link\":2,\"state\":\"connected\",\"auto\":true,\"mtu\":247,\"subscriptions\":[\"02a6c0d0-0451-4000-b000-fb3210111989#0/02a6c0d1-0451-4000-b000-fb3210111989#0\"]}]}"
+              ]
+            },
+            {
+              "do": "unsubscribe",
+              "call": 4,
+              "id": "AA:BB:CC:DD:EE:01",
+              "service": "02a6c0d0-0451-4000-b000-fb3210111989",
+              "char": "02a6c0d1-0451-4000-b000-fb3210111989",
+              "out": [
+                "op AA:BB:CC:DD:EE:01 2 9 unsub 02a6c0d0-0451-4000-b000-fb3210111989#0/02a6c0d1-0451-4000-b000-fb3210111989#0 - - 0",
+                "timer op 9 10000"
+              ]
+            },
+            {
+              "do": "op_done",
+              "id": "AA:BB:CC:DD:EE:01",
+              "gen": 2,
+              "op": 9,
+              "out": [
+                "reply 4 ok {\"subscribed\":false}",
+                "links_save [{\"id\":\"AA:BB:CC:DD:EE:01\",\"auto\":true,\"subscriptions\":[],\"options\":[]}]"
+              ]
+            },
+            {
+              "do": "timer",
+              "kind": "then",
+              "token": 2,
+              "out": [
+                "stale then timer 2"
+              ]
+            },
+            {
+              "do": "disconnect",
+              "call": 5,
+              "id": "AA:BB:CC:DD:EE:01",
+              "out": [
+                "close AA:BB:CC:DD:EE:01 2",
+                "timer close 2 2000",
+                "emit link {\"id\":\"AA:BB:CC:DD:EE:01\",\"link\":2,\"state\":\"disconnected\",\"reason\":\"requested\"}",
+                "links_save []"
+              ]
+            },
+            {
+              "do": "disconnected",
+              "id": "AA:BB:CC:DD:EE:01",
+              "gen": 2,
+              "out": [
+                "reply 5 ok {\"id\":\"AA:BB:CC:DD:EE:01\",\"state\":\"disconnected\",\"confirmed\":true}"
+              ]
+            }
+          ]
+        },
+        {
+          "name": "bosch_subscribe_then_writes_after_each_subscribe_and_every_ios",
+          "platform": "ios",
+          "steps": [
+            {
+              "do": "adapter",
+              "state": "on",
+              "out": [
+                "emit adapter {\"state\":\"on\",\"epoch\":1}"
+              ]
+            },
+            {
+              "do": "connect",
+              "call": 1,
+              "id": "7D9C1E2A-0000-4000-8000-000000000001",
+              "auto": true,
+              "seconds": 10,
+              "out": [
+                "connect 7D9C1E2A-0000-4000-8000-000000000001 1 true false",
+                "timer connect 1 10000"
+              ]
+            },
+            {
+              "do": "connected",
+              "id": "7D9C1E2A-0000-4000-8000-000000000001",
+              "gen": 1,
+              "mtu": 23,
+              "out": [
+                "emit link {\"id\":\"7D9C1E2A-0000-4000-8000-000000000001\",\"link\":1,\"state\":\"connected\",\"reason\":\"requested\",\"resubscribed\":0,\"failed\":0}",
+                "reply 1 ok {\"id\":\"7D9C1E2A-0000-4000-8000-000000000001\",\"link\":1,\"state\":\"connected\",\"mtu\":23}"
+              ]
+            },
+            {
+              "do": "subscribe",
+              "call": 2,
+              "id": "7D9C1E2A-0000-4000-8000-000000000001",
+              "service": "02a6c0d0-0451-4000-b000-fb3210111989",
+              "char": "02a6c0d1-0451-4000-b000-fb3210111989",
+              "options": {
+                "mode": "indicate",
+                "then_hex": "c0550201001a",
+                "then_every": 240
+              },
+              "out": [
+                "op 7D9C1E2A-0000-4000-8000-000000000001 1 1 sub 02a6c0d0-0451-4000-b000-fb3210111989#0/02a6c0d1-0451-4000-b000-fb3210111989#0 - - 2",
+                "timer op 1 10000"
+              ]
+            },
+            {
+              "do": "op_done",
+              "id": "7D9C1E2A-0000-4000-8000-000000000001",
+              "gen": 1,
+              "op": 1,
+              "data": {
+                "mode": "indicate"
+              },
+              "out": [
+                "reply 2 ok {\"subscribed\":true,\"mode\":\"indicate\"}",
+                "op 7D9C1E2A-0000-4000-8000-000000000001 1 2 write 02a6c0d0-0451-4000-b000-fb3210111989#0/02a6c0d1-0451-4000-b000-fb3210111989#0 - c0550201001a 0",
+                "timer op 2 10000",
+                "timer then 1 240000"
+              ]
+            },
+            {
+              "do": "op_done",
+              "id": "7D9C1E2A-0000-4000-8000-000000000001",
+              "gen": 1,
+              "op": 2,
+              "out": [
+                "emit then_write {\"id\":\"7D9C1E2A-0000-4000-8000-000000000001\",\"link\":1,\"service\":\"02a6c0d0-0451-4000-b000-fb3210111989\",\"char\":\"02a6c0d1-0451-4000-b000-fb3210111989\",\"service_n\":0,\"char_n\":0,\"reason\":\"subscribed\",\"state\":\"written\"}"
+              ]
+            },
+            {
+              "do": "timer",
+              "kind": "then",
+              "token": 1,
+              "out": [
+                "op 7D9C1E2A-0000-4000-8000-000000000001 1 3 write 02a6c0d0-0451-4000-b000-fb3210111989#0/02a6c0d1-0451-4000-b000-fb3210111989#0 - c0550201001a 0",
+                "timer op 3 10000",
+                "timer then 1 240000"
+              ]
+            },
+            {
+              "do": "op_done",
+              "id": "7D9C1E2A-0000-4000-8000-000000000001",
+              "gen": 1,
+              "op": 3,
+              "code": "gatt_error",
+              "message": "status 133",
+              "out": [
+                "emit then_write {\"id\":\"7D9C1E2A-0000-4000-8000-000000000001\",\"link\":1,\"service\":\"02a6c0d0-0451-4000-b000-fb3210111989\",\"char\":\"02a6c0d1-0451-4000-b000-fb3210111989\",\"service_n\":0,\"char_n\":0,\"reason\":\"every\",\"state\":\"failed\",\"code\":\"gatt_error\",\"error\":\"status 133\"}"
+              ]
+            },
+            {
+              "do": "disconnected",
+              "id": "7D9C1E2A-0000-4000-8000-000000000001",
+              "gen": 1,
+              "reason": "remote",
+              "out": [
+                "emit link {\"id\":\"7D9C1E2A-0000-4000-8000-000000000001\",\"link\":1,\"state\":\"disconnected\",\"reason\":\"remote\"}",
+                "connect 7D9C1E2A-0000-4000-8000-000000000001 2 true true",
+                "emit link {\"id\":\"7D9C1E2A-0000-4000-8000-000000000001\",\"link\":2,\"state\":\"reconnecting\",\"reason\":\"auto\"}"
+              ]
+            },
+            {
+              "do": "timer",
+              "kind": "then",
+              "token": 1,
+              "out": [
+                "stale then timer 1"
+              ]
+            },
+            {
+              "do": "connected",
+              "id": "7D9C1E2A-0000-4000-8000-000000000001",
+              "gen": 2,
+              "mtu": 23,
+              "out": [
+                "op 7D9C1E2A-0000-4000-8000-000000000001 2 4 discover - - - 0",
+                "timer op 4 10000"
+              ]
+            },
+            {
+              "do": "op_done",
+              "id": "7D9C1E2A-0000-4000-8000-000000000001",
+              "gen": 2,
+              "op": 4,
+              "data": {
+                "services": []
+              },
+              "out": [
+                "op 7D9C1E2A-0000-4000-8000-000000000001 2 5 sub 02a6c0d0-0451-4000-b000-fb3210111989#0/02a6c0d1-0451-4000-b000-fb3210111989#0 - - 2",
+                "timer op 5 10000"
+              ]
+            },
+            {
+              "do": "op_done",
+              "id": "7D9C1E2A-0000-4000-8000-000000000001",
+              "gen": 2,
+              "op": 5,
+              "data": {
+                "mode": "indicate"
+              },
+              "out": [
+                "op 7D9C1E2A-0000-4000-8000-000000000001 2 6 write 02a6c0d0-0451-4000-b000-fb3210111989#0/02a6c0d1-0451-4000-b000-fb3210111989#0 - c0550201001a 0",
+                "timer op 6 10000",
+                "timer then 2 240000"
+              ]
+            },
+            {
+              "do": "op_done",
+              "id": "7D9C1E2A-0000-4000-8000-000000000001",
+              "gen": 2,
+              "op": 6,
+              "out": [
+                "emit then_write {\"id\":\"7D9C1E2A-0000-4000-8000-000000000001\",\"link\":2,\"service\":\"02a6c0d0-0451-4000-b000-fb3210111989\",\"char\":\"02a6c0d1-0451-4000-b000-fb3210111989\",\"service_n\":0,\"char_n\":0,\"reason\":\"resubscribed\",\"state\":\"written\"}",
+                "emit link {\"id\":\"7D9C1E2A-0000-4000-8000-000000000001\",\"link\":2,\"state\":\"connected\",\"reason\":\"auto\",\"resubscribed\":1,\"failed\":0}"
+              ]
+            },
+            {
+              "do": "disconnect",
+              "call": 5,
+              "id": "7D9C1E2A-0000-4000-8000-000000000001",
+              "out": [
+                "close 7D9C1E2A-0000-4000-8000-000000000001 2",
+                "timer close 2 2000",
+                "emit link {\"id\":\"7D9C1E2A-0000-4000-8000-000000000001\",\"link\":2,\"state\":\"disconnected\",\"reason\":\"requested\"}"
+              ]
+            },
+            {
+              "do": "disconnected",
+              "id": "7D9C1E2A-0000-4000-8000-000000000001",
+              "gen": 2,
+              "out": [
+                "reply 5 ok {\"id\":\"7D9C1E2A-0000-4000-8000-000000000001\",\"state\":\"disconnected\",\"confirmed\":true}"
+              ]
+            },
+            {
+              "do": "timer",
+              "kind": "then",
+              "token": 2,
+              "out": [
+                "stale then timer 2"
+              ]
+            }
+          ]
+        },
+        {
+          "name": "bosch_subscribe_options_rules_and_target_android",
+          "platform": "android",
+          "steps": [
+            {
+              "do": "adapter",
+              "state": "on",
+              "out": [
+                "emit adapter {\"state\":\"on\",\"epoch\":1}"
+              ]
+            },
+            {
+              "do": "connect",
+              "call": 1,
+              "id": "AA:BB:CC:DD:EE:01",
+              "auto": false,
+              "seconds": 10,
+              "out": [
+                "connect AA:BB:CC:DD:EE:01 1 false false",
+                "timer connect 1 10000"
+              ]
+            },
+            {
+              "do": "connected",
+              "id": "AA:BB:CC:DD:EE:01",
+              "gen": 1,
+              "mtu": 23,
+              "out": [
+                "op AA:BB:CC:DD:EE:01 1 1 mtu - - - 517",
+                "timer op 1 10000"
+              ]
+            },
+            {
+              "do": "mtu_changed",
+              "id": "AA:BB:CC:DD:EE:01",
+              "gen": 1,
+              "mtu": 247,
+              "out": [
+                "emit link {\"id\":\"AA:BB:CC:DD:EE:01\",\"link\":1,\"state\":\"connected\",\"reason\":\"requested\",\"resubscribed\":0,\"failed\":0}",
+                "reply 1 ok {\"id\":\"AA:BB:CC:DD:EE:01\",\"link\":1,\"state\":\"connected\",\"mtu\":247}"
+              ]
+            },
+            {
+              "do": "subscribe",
+              "call": 2,
+              "id": "AA:BB:CC:DD:EE:01",
+              "service": "02a6c0d0-0451-4000-b000-fb3210111989",
+              "char": "02a6c0d1-0451-4000-b000-fb3210111989",
+              "options": {
+                "mode": "both"
+              },
+              "out": [
+                "reply 2 error bad_value"
+              ]
+            },
+            {
+              "do": "subscribe",
+              "call": 3,
+              "id": "AA:BB:CC:DD:EE:01",
+              "service": "02a6c0d0-0451-4000-b000-fb3210111989",
+              "char": "02a6c0d1-0451-4000-b000-fb3210111989",
+              "options": {
+                "then_every": 240
+              },
+              "out": [
+                "reply 3 error bad_value"
+              ]
+            },
+            {
+              "do": "subscribe",
+              "call": 4,
+              "id": "AA:BB:CC:DD:EE:01",
+              "service": "02a6c0d0-0451-4000-b000-fb3210111989",
+              "char": "02a6c0d1-0451-4000-b000-fb3210111989",
+              "options": {
+                "then_hex": "c0550201001a",
+                "then_every": 3601
+              },
+              "out": [
+                "reply 4 error bad_value"
+              ]
+            },
+            {
+              "do": "subscribe",
+              "call": 5,
+              "id": "AA:BB:CC:DD:EE:01",
+              "service": "02a6c0d0-0451-4000-b000-fb3210111989",
+              "char": "02a6c0d1-0451-4000-b000-fb3210111989",
+              "options": {
+                "then_hex": "c0550201001a",
+                "then_every": -1
+              },
+              "out": [
+                "reply 5 error bad_value"
+              ]
+            },
+            {
+              "do": "subscribe",
+              "call": 6,
+              "id": "AA:BB:CC:DD:EE:01",
+              "service": "02a6c0d0-0451-4000-b000-fb3210111989",
+              "char": "02a6c0d1-0451-4000-b000-fb3210111989",
+              "options": {
+                "then_hex": "zz"
+              },
+              "out": [
+                "reply 6 error bad_value"
+              ]
+            },
+            {
+              "do": "subscribe",
+              "call": 7,
+              "id": "AA:BB:CC:DD:EE:01",
+              "service": "02a6c0d0-0451-4000-b000-fb3210111989",
+              "char": "02a6c0d1-0451-4000-b000-fb3210111989",
+              "options": {
+                "then_hex": "c0550201001a",
+                "then_b64": "wFUCAQAa"
+              },
+              "out": [
+                "reply 7 error bad_value"
+              ]
+            },
+            {
+              "do": "subscribe",
+              "call": 8,
+              "id": "AA:BB:CC:DD:EE:01",
+              "service": "02a6c0d0-0451-4000-b000-fb3210111989",
+              "char": "02a6c0d1-0451-4000-b000-fb3210111989",
+              "options": {
+                "then_hex": "000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000"
+              },
+              "out": [
+                "reply 8 error too_long"
+              ]
+            },
+            {
+              "do": "subscribe",
+              "call": 9,
+              "id": "AA:BB:CC:DD:EE:01",
+              "service": "02a6c0d0-0451-4000-b000-fb3210111989",
+              "char": "02a6c0d1-0451-4000-b000-fb3210111989",
+              "options": {
+                "then_hex": "c0550201001a",
+                "then_char": "not-a-uuid"
+              },
+              "out": [
+                "reply 9 error bad_value"
+              ]
+            },
+            {
+              "do": "subscribe",
+              "call": 10,
+              "id": "AA:BB:CC:DD:EE:01",
+              "service": "02a6c0d0-0451-4000-b000-fb3210111989",
+              "char": "02a6c0d1-0451-4000-b000-fb3210111989",
+              "options": {
+                "then_x": 1
+              },
+              "out": [
+                "reply 10 error bad_value"
+              ]
+            },
+            {
+              "do": "unsubscribe",
+              "call": 11,
+              "id": "AA:BB:CC:DD:EE:01",
+              "service": "02a6c0d0-0451-4000-b000-fb3210111989",
+              "char": "02a6c0d1-0451-4000-b000-fb3210111989",
+              "options": {
+                "mode": "notify"
+              },
+              "out": [
+                "reply 11 error bad_value"
+              ]
+            },
+            {
+              "do": "message",
+              "call": 4,
+              "out": [
+                "message 4 then_every is 0 to 3600 seconds"
+              ]
+            },
+            {
+              "do": "subscribe",
+              "call": 20,
+              "id": "AA:BB:CC:DD:EE:01",
+              "service": "02a6c0d0-0451-4000-b000-fb3210111989",
+              "char": "02a6c0d1-0451-4000-b000-fb3210111989",
+              "options": {
+                "mode": "notify",
+                "then_text": "go",
+                "then_response": false,
+                "then_char": "2a39",
+                "then_char_n": 1
+              },
+              "out": [
+                "op AA:BB:CC:DD:EE:01 1 2 sub 02a6c0d0-0451-4000-b000-fb3210111989#0/02a6c0d1-0451-4000-b000-fb3210111989#0 - - 1",
+                "timer op 2 10000"
+              ]
+            },
+            {
+              "do": "op_done",
+              "id": "AA:BB:CC:DD:EE:01",
+              "gen": 1,
+              "op": 2,
+              "data": {
+                "mode": "notify"
+              },
+              "out": [
+                "reply 20 ok {\"subscribed\":true,\"mode\":\"notify\"}",
+                "op AA:BB:CC:DD:EE:01 1 3 wnr 02a6c0d0-0451-4000-b000-fb3210111989#0/00002a39-0000-1000-8000-00805f9b34fb#1 - 676f 0",
+                "timer op 3 10000"
+              ]
+            },
+            {
+              "do": "op_done",
+              "id": "AA:BB:CC:DD:EE:01",
+              "gen": 1,
+              "op": 3,
+              "out": [
+                "emit then_write {\"id\":\"AA:BB:CC:DD:EE:01\",\"link\":1,\"service\":\"02a6c0d0-0451-4000-b000-fb3210111989\",\"char\":\"00002a39-0000-1000-8000-00805f9b34fb\",\"service_n\":0,\"char_n\":1,\"reason\":\"subscribed\",\"state\":\"written\"}"
+              ]
+            },
+            {
+              "do": "subscribe",
+              "call": 21,
+              "id": "AA:BB:CC:DD:EE:01",
+              "service": "02a6c0d0-0451-4000-b000-fb3210111989",
+              "char": "02a6c0d1-0451-4000-b000-fb3210111989",
+              "out": [
+                "op AA:BB:CC:DD:EE:01 1 4 sub 02a6c0d0-0451-4000-b000-fb3210111989#0/02a6c0d1-0451-4000-b000-fb3210111989#0 - - 0",
+                "timer op 4 10000"
+              ]
+            },
+            {
+              "do": "op_done",
+              "id": "AA:BB:CC:DD:EE:01",
+              "gen": 1,
+              "op": 4,
+              "data": {
+                "mode": "notify"
+              },
+              "out": [
+                "reply 21 ok {\"subscribed\":true,\"mode\":\"notify\"}"
+              ]
+            },
+            {
+              "do": "links",
+              "call": 22,
+              "out": [
+                "reply 22 ok {\"links\":[{\"id\":\"AA:BB:CC:DD:EE:01\",\"link\":1,\"state\":\"connected\",\"auto\":false,\"mtu\":247,\"subscriptions\":[\"02a6c0d0-0451-4000-b000-fb3210111989#0/02a6c0d1-0451-4000-b000-fb3210111989#0\"]}]}"
+              ]
+            }
+          ]
+        },
+        {
+          "name": "bosch_subscribe_then_write_on_a_full_queue_is_recorded_busy_android",
+          "platform": "android",
+          "steps": [
+            {
+              "do": "adapter",
+              "state": "on",
+              "out": [
+                "emit adapter {\"state\":\"on\",\"epoch\":1}"
+              ]
+            },
+            {
+              "do": "connect",
+              "call": 1,
+              "id": "AA:BB:CC:DD:EE:01",
+              "auto": false,
+              "seconds": 10,
+              "out": [
+                "connect AA:BB:CC:DD:EE:01 1 false false",
+                "timer connect 1 10000"
+              ]
+            },
+            {
+              "do": "connected",
+              "id": "AA:BB:CC:DD:EE:01",
+              "gen": 1,
+              "mtu": 23,
+              "out": [
+                "op AA:BB:CC:DD:EE:01 1 1 mtu - - - 517",
+                "timer op 1 10000"
+              ]
+            },
+            {
+              "do": "mtu_changed",
+              "id": "AA:BB:CC:DD:EE:01",
+              "gen": 1,
+              "mtu": 247,
+              "out": [
+                "emit link {\"id\":\"AA:BB:CC:DD:EE:01\",\"link\":1,\"state\":\"connected\",\"reason\":\"requested\",\"resubscribed\":0,\"failed\":0}",
+                "reply 1 ok {\"id\":\"AA:BB:CC:DD:EE:01\",\"link\":1,\"state\":\"connected\",\"mtu\":247}"
+              ]
+            },
+            {
+              "do": "subscribe",
+              "call": 2,
+              "id": "AA:BB:CC:DD:EE:01",
+              "service": "02a6c0d0-0451-4000-b000-fb3210111989",
+              "char": "02a6c0d1-0451-4000-b000-fb3210111989",
+              "options": {
+                "then_hex": "c0550201001a"
+              },
+              "out": [
+                "op AA:BB:CC:DD:EE:01 1 2 sub 02a6c0d0-0451-4000-b000-fb3210111989#0/02a6c0d1-0451-4000-b000-fb3210111989#0 - - 0",
+                "timer op 2 10000"
+              ]
+            },
+            {
+              "do": "read",
+              "call": 100,
+              "id": "AA:BB:CC:DD:EE:01",
+              "service": "02a6c0d0-0451-4000-b000-fb3210111989",
+              "char": "02a6c0d1-0451-4000-b000-fb3210111989",
+              "repeat": 64,
+              "out": []
+            },
+            {
+              "do": "op_done",
+              "id": "AA:BB:CC:DD:EE:01",
+              "gen": 1,
+              "op": 2,
+              "data": {
+                "mode": "indicate"
+              },
+              "out": [
+                "reply 2 ok {\"subscribed\":true,\"mode\":\"indicate\"}",
+                "emit then_write {\"id\":\"AA:BB:CC:DD:EE:01\",\"link\":1,\"service\":\"02a6c0d0-0451-4000-b000-fb3210111989\",\"char\":\"02a6c0d1-0451-4000-b000-fb3210111989\",\"service_n\":0,\"char_n\":0,\"reason\":\"subscribed\",\"state\":\"failed\",\"code\":\"busy\",\"error\":\"too many operations are waiting on this link\"}",
+                "op AA:BB:CC:DD:EE:01 1 3 read 02a6c0d0-0451-4000-b000-fb3210111989#0/02a6c0d1-0451-4000-b000-fb3210111989#0 - - 0",
+                "timer op 3 10000"
+              ]
+            }
+          ]
+        },
+        {
+          "name": "bosch_android_resumes_saved_links_after_a_process_restart",
+          "platform": "android",
+          "steps": [
+            {
+              "do": "adapter",
+              "state": "on",
+              "out": [
+                "emit adapter {\"state\":\"on\",\"epoch\":1}"
+              ]
+            },
+            {
+              "do": "resume",
+              "links": [
+                {
+                  "id": "AA:BB:CC:DD:EE:01",
+                  "auto": true,
+                  "subscriptions": [
+                    "02a6c0d0-0451-4000-b000-fb3210111989#0/02a6c0d1-0451-4000-b000-fb3210111989#0"
+                  ],
+                  "options": [
+                    {
+                      "key": "02a6c0d0-0451-4000-b000-fb3210111989#0/02a6c0d1-0451-4000-b000-fb3210111989#0",
+                      "mode": 2,
+                      "hex": "c0550201001a",
+                      "response": true,
+                      "every": 240,
+                      "target": null
+                    }
+                  ]
+                },
+                {
+                  "id": "AA:BB:CC:DD:EE:02",
+                  "auto": false,
+                  "subscriptions": [],
+                  "options": []
+                },
+                {
+                  "id": "not-an-address",
+                  "auto": true,
+                  "subscriptions": [],
+                  "options": []
+                }
+              ],
+              "out": [
+                "connect AA:BB:CC:DD:EE:01 1 true true",
+                "emit link {\"id\":\"AA:BB:CC:DD:EE:01\",\"link\":1,\"state\":\"reconnecting\",\"reason\":\"auto\"}",
+                "links_save [{\"id\":\"AA:BB:CC:DD:EE:01\",\"auto\":true,\"subscriptions\":[\"02a6c0d0-0451-4000-b000-fb3210111989#0/02a6c0d1-0451-4000-b000-fb3210111989#0\"],\"options\":[{\"key\":\"02a6c0d0-0451-4000-b000-fb3210111989#0/02a6c0d1-0451-4000-b000-fb3210111989#0\",\"mode\":2,\"hex\":\"c0550201001a\",\"response\":true,\"every\":240,\"target\":null}]}]",
+                "connect AA:BB:CC:DD:EE:02 2 false true",
+                "emit link {\"id\":\"AA:BB:CC:DD:EE:02\",\"link\":2,\"state\":\"connecting\",\"reason\":\"requested\"}",
+                "links_save [{\"id\":\"AA:BB:CC:DD:EE:01\",\"auto\":true,\"subscriptions\":[\"02a6c0d0-0451-4000-b000-fb3210111989#0/02a6c0d1-0451-4000-b000-fb3210111989#0\"],\"options\":[{\"key\":\"02a6c0d0-0451-4000-b000-fb3210111989#0/02a6c0d1-0451-4000-b000-fb3210111989#0\",\"mode\":2,\"hex\":\"c0550201001a\",\"response\":true,\"every\":240,\"target\":null}]},{\"id\":\"AA:BB:CC:DD:EE:02\",\"auto\":false,\"subscriptions\":[],\"options\":[]}]",
+                "emit restored {\"peripherals\":[\"AA:BB:CC:DD:EE:01\",\"AA:BB:CC:DD:EE:02\"],\"scanning\":false}"
+              ]
+            },
+            {
+              "do": "saved_links",
+              "out": [
+                "saved [{\"id\":\"AA:BB:CC:DD:EE:01\",\"auto\":true,\"subscriptions\":[\"02a6c0d0-0451-4000-b000-fb3210111989#0/02a6c0d1-0451-4000-b000-fb3210111989#0\"],\"options\":[{\"key\":\"02a6c0d0-0451-4000-b000-fb3210111989#0/02a6c0d1-0451-4000-b000-fb3210111989#0\",\"mode\":2,\"hex\":\"c0550201001a\",\"response\":true,\"every\":240,\"target\":null}]},{\"id\":\"AA:BB:CC:DD:EE:02\",\"auto\":false,\"subscriptions\":[],\"options\":[]}]"
+              ]
+            },
+            {
+              "do": "connected",
+              "id": "AA:BB:CC:DD:EE:01",
+              "gen": 1,
+              "mtu": 23,
+              "out": [
+                "op AA:BB:CC:DD:EE:01 1 1 mtu - - - 517",
+                "timer op 1 10000"
+              ]
+            },
+            {
+              "do": "mtu_changed",
+              "id": "AA:BB:CC:DD:EE:01",
+              "gen": 1,
+              "mtu": 247,
+              "out": [
+                "op AA:BB:CC:DD:EE:01 1 2 discover - - - 0",
+                "timer op 2 10000"
+              ]
+            },
+            {
+              "do": "op_done",
+              "id": "AA:BB:CC:DD:EE:01",
+              "gen": 1,
+              "op": 2,
+              "data": {
+                "services": []
+              },
+              "out": [
+                "op AA:BB:CC:DD:EE:01 1 3 sub 02a6c0d0-0451-4000-b000-fb3210111989#0/02a6c0d1-0451-4000-b000-fb3210111989#0 - - 2",
+                "timer op 3 10000"
+              ]
+            },
+            {
+              "do": "op_done",
+              "id": "AA:BB:CC:DD:EE:01",
+              "gen": 1,
+              "op": 3,
+              "data": {
+                "mode": "indicate"
+              },
+              "out": [
+                "op AA:BB:CC:DD:EE:01 1 4 write 02a6c0d0-0451-4000-b000-fb3210111989#0/02a6c0d1-0451-4000-b000-fb3210111989#0 - c0550201001a 0",
+                "timer op 4 10000",
+                "timer then 1 240000"
+              ]
+            },
+            {
+              "do": "op_done",
+              "id": "AA:BB:CC:DD:EE:01",
+              "gen": 1,
+              "op": 4,
+              "out": [
+                "emit then_write {\"id\":\"AA:BB:CC:DD:EE:01\",\"link\":1,\"service\":\"02a6c0d0-0451-4000-b000-fb3210111989\",\"char\":\"02a6c0d1-0451-4000-b000-fb3210111989\",\"service_n\":0,\"char_n\":0,\"reason\":\"resubscribed\",\"state\":\"written\"}",
+                "emit link {\"id\":\"AA:BB:CC:DD:EE:01\",\"link\":1,\"state\":\"connected\",\"reason\":\"auto\",\"resubscribed\":1,\"failed\":0}"
+              ]
+            },
+            {
+              "do": "links",
+              "call": 1,
+              "out": [
+                "reply 1 ok {\"links\":[{\"id\":\"AA:BB:CC:DD:EE:01\",\"link\":1,\"state\":\"connected\",\"auto\":true,\"mtu\":247,\"subscriptions\":[\"02a6c0d0-0451-4000-b000-fb3210111989#0/02a6c0d1-0451-4000-b000-fb3210111989#0\"]},{\"id\":\"AA:BB:CC:DD:EE:02\",\"link\":2,\"state\":\"connecting\",\"auto\":false,\"mtu\":23,\"subscriptions\":[]}]}"
+              ]
+            },
+            {
+              "do": "connect",
+              "call": 2,
+              "id": "AA:BB:CC:DD:EE:02",
+              "seconds": 10,
+              "out": [
+                "timer pending 1 10000",
+                "links_save [{\"id\":\"AA:BB:CC:DD:EE:01\",\"auto\":true,\"subscriptions\":[\"02a6c0d0-0451-4000-b000-fb3210111989#0/02a6c0d1-0451-4000-b000-fb3210111989#0\"],\"options\":[{\"key\":\"02a6c0d0-0451-4000-b000-fb3210111989#0/02a6c0d1-0451-4000-b000-fb3210111989#0\",\"mode\":2,\"hex\":\"c0550201001a\",\"response\":true,\"every\":240,\"target\":null}]}]"
+              ]
+            },
+            {
+              "do": "disconnect",
+              "call": 3,
+              "id": "AA:BB:CC:DD:EE:01",
+              "out": [
+                "close AA:BB:CC:DD:EE:01 1",
+                "timer close 1 2000",
+                "emit link {\"id\":\"AA:BB:CC:DD:EE:01\",\"link\":1,\"state\":\"disconnected\",\"reason\":\"requested\"}",
+                "links_save []"
+              ]
+            },
+            {
+              "do": "disconnected",
+              "id": "AA:BB:CC:DD:EE:01",
+              "gen": 1,
+              "out": [
+                "reply 3 ok {\"id\":\"AA:BB:CC:DD:EE:01\",\"state\":\"disconnected\",\"confirmed\":true}"
+              ]
+            },
+            {
+              "do": "disconnect",
+              "call": 4,
+              "id": "AA:BB:CC:DD:EE:02",
+              "out": [
+                "reply 2 error link_lost",
+                "close AA:BB:CC:DD:EE:02 2",
+                "timer close 2 2000",
+                "emit link {\"id\":\"AA:BB:CC:DD:EE:02\",\"link\":2,\"state\":\"disconnected\",\"reason\":\"requested\"}"
+              ]
+            },
+            {
+              "do": "saved_links",
+              "out": [
+                "saved []"
+              ]
+            }
+          ]
+        },
+        {
+          "name": "bosch_android_resume_while_off_waits_for_the_adapter",
+          "platform": "android",
+          "steps": [
+            {
+              "do": "adapter",
+              "state": "off",
+              "out": [
+                "emit adapter {\"state\":\"off\",\"epoch\":1}"
+              ]
+            },
+            {
+              "do": "resume",
+              "links": [
+                {
+                  "id": "AA:BB:CC:DD:EE:01",
+                  "auto": true,
+                  "subscriptions": [
+                    "02a6c0d0-0451-4000-b000-fb3210111989#0/02a6c0d1-0451-4000-b000-fb3210111989#0"
+                  ],
+                  "options": [
+                    {
+                      "key": "02a6c0d0-0451-4000-b000-fb3210111989#0/02a6c0d1-0451-4000-b000-fb3210111989#0",
+                      "mode": 2,
+                      "hex": "c0550201001a",
+                      "response": true,
+                      "every": 240,
+                      "target": null
+                    }
+                  ]
+                },
+                {
+                  "id": "AA:BB:CC:DD:EE:02",
+                  "auto": false,
+                  "subscriptions": [],
+                  "options": []
+                }
+              ],
+              "out": [
+                "emit restored {\"peripherals\":[\"AA:BB:CC:DD:EE:01\"],\"scanning\":false}",
+                "links_save [{\"id\":\"AA:BB:CC:DD:EE:01\",\"auto\":true,\"subscriptions\":[\"02a6c0d0-0451-4000-b000-fb3210111989#0/02a6c0d1-0451-4000-b000-fb3210111989#0\"],\"options\":[{\"key\":\"02a6c0d0-0451-4000-b000-fb3210111989#0/02a6c0d1-0451-4000-b000-fb3210111989#0\",\"mode\":2,\"hex\":\"c0550201001a\",\"response\":true,\"every\":240,\"target\":null}]}]"
+              ]
+            },
+            {
+              "do": "saved_links",
+              "out": [
+                "saved [{\"id\":\"AA:BB:CC:DD:EE:01\",\"auto\":true,\"subscriptions\":[\"02a6c0d0-0451-4000-b000-fb3210111989#0/02a6c0d1-0451-4000-b000-fb3210111989#0\"],\"options\":[{\"key\":\"02a6c0d0-0451-4000-b000-fb3210111989#0/02a6c0d1-0451-4000-b000-fb3210111989#0\",\"mode\":2,\"hex\":\"c0550201001a\",\"response\":true,\"every\":240,\"target\":null}]}]"
+              ]
+            },
+            {
+              "do": "adapter",
+              "state": "on",
+              "out": [
+                "emit adapter {\"state\":\"on\",\"epoch\":1}",
+                "connect AA:BB:CC:DD:EE:01 1 true true",
+                "emit link {\"id\":\"AA:BB:CC:DD:EE:01\",\"link\":1,\"state\":\"reconnecting\",\"reason\":\"auto\"}"
+              ]
+            },
+            {
+              "do": "resume",
+              "links": [],
+              "out": []
             }
           ]
         }

@@ -225,6 +225,10 @@ public final class BleCoreTest {
             out.add("persist " + BleCore.json(snapshot));
         }
 
+        public void linksSave(List<Object> links) {
+            out.add("links_save " + BleCore.json(links));
+        }
+
         public String attRespond(int epoch, int request, String status, int offset, byte[] data) {
             out.add("att_respond " + epoch + " " + request + " " + status + " " + offset + " " + (data == null ? "-" : BleCore.hex(data)));
             return take("att_respond");
@@ -432,7 +436,13 @@ public final class BleCoreTest {
             case "subscribe":
             case "unsubscribe":
                 core.subscribe(call, str(st, "id"), str(st, "service"), num(st, "service_n", 0), str(st, "char"), num(st, "char_n", 0),
-                        "subscribe".equals(d));
+                        "subscribe".equals(d), st.containsKey("options") ? new LinkedHashMap<>(map(st, "options")) : null);
+                return;
+            case "resume":
+                core.resume(new ArrayList<Object>((List<?>) st.get("links")));
+                return;
+            case "saved_links":
+                port.out.add("saved " + BleCore.json(core.savedLinks()));
                 return;
             case "rssi":
                 core.rssi(call, str(st, "id"));

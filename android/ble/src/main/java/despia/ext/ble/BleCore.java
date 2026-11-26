@@ -102,6 +102,13 @@ public final class BleCore {
         void persist(Map<String, Object> snapshot);
 
         /**
+         * Android: the links the page asked to keep waiting for (connect with {@code auto}, or
+         * {@code seconds} 0 still connecting), with their subscriptions and subscribe options, written
+         * so the next process resumes them ({@link #resume}). Called only when the set changes.
+         */
+        void linksSave(List<Object> links);
+
+        /**
          * Answer the central's request {@code request} (a read or write of a characteristic with flag
          * a) with an ATT outcome ({@link #ATT_STATUSES}), the offset and, for a read, the value. null when
          * handed over, else "code message".
@@ -237,6 +244,10 @@ public final class BleCore {
         boolean internal;
         /** The {@code raw} route: the reply names the characteristic the radio chose. */
         boolean raw;
+        /** A follow-up write of a subscribe: the subscribed key it follows, and why it ran. */
+        String then, thenReason;
+        /** A page subscribe's options, kept for the link once the subscription succeeds. */
+        SubOpts opts;
 
         Op(int call, String kind) {
             this.call = call;
@@ -267,6 +278,29 @@ public final class BleCore {
             this.token = token;
         }
     }
+
+    /**
+     * What a page's {@code subscribe} asked for one characteristic besides the subscription itself:
+     * the CCCD mode ({@code mode}: 0 the platform's choice, 1 notify, 2 indicate) and the write that
+     * follows every successful subscribe of it, the page's own and each automatic resubscribe
+     * ({@code then_*}), repeated every {@code everyMs} while it stays subscribed when the page asked.
+     * Kept per device until the page unsubscribes, subscribes again or disconnects.
+     */
+    static final class SubOpts {
+        int mode;
+        byte[] data;
+        boolean response = true;
+        int everyMs;
+        String target;
+        /** The token of the running repeat timer; 0 when none runs. */
+        int token;
+    }
+
+    final Map<String, Map<String, SubOpts>> subOpts = new LinkedHashMap<>();
+    int nextThen;
+    public static final int THEN_EVERY_MAX_S = 3600;
+    /** The last set handed to {@link Port#linksSave} (Android), as JSON. */
+    String savedLinks = "[]";
 
     public BleCore(Port port, String platform, String run) {
         this.port = port;
@@ -989,6 +1023,7 @@ public final class BleCore {
                 pending.background = false;
                 pending.unbounded = false;
                 boundPending(pending, seconds * 1000);
+                saveLinks();
                 return;
             }
             fail(call, "busy", "this device is linked or connecting");
@@ -1105,6 +1140,8 @@ public final class BleCore {
             for (String k : l.wanted) {
                 Op s = new Op(-1, "sub");
                 s.key = k;
+                SubOpts so = opts(id, k);
+                s.arg = so == null ? 0 : so.mode;
                 s.internal = true;
                 l.queue.add(s);
             }
@@ -1152,6 +1189,7 @@ public final class BleCore {
         }
         l.auto = false;
         l.wanted.clear();
+        cancelThen(subOpts.remove(id));
         boolean confirmedNow = closeLink(l, "requested", false);
         if (confirmedNow) {
             ok(call, obj("id", id, "state", "disconnected", "confirmed", true));
@@ -1423,13 +1461,258 @@ public final class BleCore {
     }
 
     public void subscribe(int call, String id, String service, int sn, String chr, int cn, boolean on) {
+        subscribe(call, id, service, sn, chr, cn, on, null);
+    }
+
+    /** The subscribe options a page may give (route parameter names). */
+    public static final List<String> SUBSCRIBE_OPTION_KEYS = java.util.Arrays.asList(
+            "mode", "then_hex", "then_b64", "then_text", "then_response", "then_every", "then_char", "then_char_n");
+
+    /**
+     * {@code options}: {@code mode} ({@code notify} or {@code indicate}: the CCCD value to write when the
+     * characteristic offers both), and a follow-up write: exactly one of {@code then_hex},
+     * {@code then_b64} and {@code then_text}, {@code then_response} (default true), {@code then_every}
+     * (seconds, 0 to 3600; 0 writes only after each subscribe) and {@code then_char} with
+     * {@code then_char_n} (a characteristic of the same service; default the subscribed one).
+     */
+    public void subscribe(int call, String id, String service, int sn, String chr, int cn, boolean on,
+                          Map<String, Object> options) {
         Link l = connectedLink(call, id);
         if (l == null) return;
         String k = target(call, service, sn, chr, cn);
         if (k == null) return;
+        Map<String, Object> o0 = options == null ? obj() : options;
+        if (!on && !o0.isEmpty()) {
+            fail(call, "bad_value", "mode and then_* are subscribe options");
+            return;
+        }
+        SubOpts so = null;
+        if (on) {
+            so = subOpts(call, uuid(service), sn, o0);
+            if (so == BAD_OPTS) return;
+        }
         Op o = new Op(call, on ? "sub" : "unsub");
         o.key = k;
+        o.arg = so == null ? 0 : so.mode;
+        o.opts = so;
         enqueue(call, l, o);
+    }
+
+    private static final SubOpts BAD_OPTS = new SubOpts();
+
+    /** The page's subscribe options; null when it gave none; BAD_OPTS after failing the call. */
+    private SubOpts subOpts(int call, String service, int sn, Map<String, Object> o) {
+        if (o.isEmpty()) return null;
+        for (String key : o.keySet()) {
+            if (!SUBSCRIBE_OPTION_KEYS.contains(key)) {
+                fail(call, "bad_value", "unknown subscribe option " + key);
+                return BAD_OPTS;
+            }
+        }
+        SubOpts so = new SubOpts();
+        Object mode = o.get("mode");
+        if (mode != null) {
+            if ("notify".equals(mode)) so.mode = 1;
+            else if ("indicate".equals(mode)) so.mode = 2;
+            else {
+                fail(call, "bad_value", "mode is notify or indicate");
+                return BAD_OPTS;
+            }
+        }
+        String h = (String) o.get("then_hex"), b = (String) o.get("then_b64"), t = (String) o.get("then_text");
+        boolean given = h != null || b != null || t != null;
+        if (!given) {
+            if (o.containsKey("then_response") || o.containsKey("then_every") || o.containsKey("then_char")
+                    || o.containsKey("then_char_n")) {
+                fail(call, "bad_value", "then_response, then_every and then_char need then_hex, then_b64 or then_text");
+                return BAD_OPTS;
+            }
+            return so;
+        }
+        byte[] data = writeData(call, h, b, t);
+        if (data == null) return BAD_OPTS;
+        so.data = data;
+        if (o.get("then_response") instanceof Boolean) so.response = (Boolean) o.get("then_response");
+        int every = o.get("then_every") instanceof Number ? ((Number) o.get("then_every")).intValue() : 0;
+        if (every < 0 || every > THEN_EVERY_MAX_S) {
+            fail(call, "bad_value", "then_every is 0 to " + THEN_EVERY_MAX_S + " seconds");
+            return BAD_OPTS;
+        }
+        so.everyMs = every * 1000;
+        Object tc = o.get("then_char");
+        int tcn = o.get("then_char_n") instanceof Number ? ((Number) o.get("then_char_n")).intValue() : 0;
+        if (tc != null) {
+            String c = uuid((String) tc);
+            if (c == null) {
+                fail(call, "bad_value", "then_char must be a UUID");
+                return BAD_OPTS;
+            }
+            so.target = key(service, sn, c, tcn);
+        }
+        return so;
+    }
+
+    private SubOpts opts(String id, String key) {
+        Map<String, SubOpts> m = subOpts.get(id);
+        return m == null ? null : m.get(key);
+    }
+
+    private void cancelThen(Map<String, SubOpts> m) {
+        if (m != null) for (SubOpts so : m.values()) so.token = 0;
+    }
+
+    /** A subscription of {@code key} succeeded (the page's or a resubscribe): its follow-up write, if any. */
+    private void afterSub(Link l, String key, String reason) {
+        SubOpts so = opts(l.id, key);
+        if (so == null || so.data == null) return;
+        thenWrite(l, key, so, reason, true);
+        if (so.everyMs > 0) {
+            so.token = ++nextThen;
+            port.timer("then", so.token, so.everyMs);
+        }
+    }
+
+    /** Queues the follow-up write; {@code first}: right after the subscribe, ahead of what waits. */
+    private void thenWrite(Link l, String key, SubOpts so, String reason, boolean first) {
+        Op w = new Op(-1, so.response ? "write" : "wnr");
+        w.key = so.target == null ? key : so.target;
+        w.data = so.data;
+        w.internal = true;
+        w.then = key;
+        w.thenReason = reason;
+        if (l.queue.size() >= QUEUE_MAX) {
+            thenRecord(l, w, "failed", "busy", "too many operations are waiting on this link");
+            return;
+        }
+        if (first) l.queue.addFirst(w);
+        else l.queue.add(w);
+        pump(l);
+    }
+
+    private void thenRecord(Link l, Op w, String state, String code, String message) {
+        String[] p = w.key.split("[#/]");
+        Map<String, Object> rec = obj("id", l.id, "link", l.gen, "service", p[0], "char", p[2],
+                "service_n", Integer.parseInt(p[1]), "char_n", Integer.parseInt(p[3]), "reason", w.thenReason, "state", state);
+        if (code != null) {
+            rec.put("code", code);
+            rec.put("error", message == null ? "" : message);
+        }
+        record("then_write", rec);
+    }
+
+    /** The repeat timer of a follow-up write: writes again while the link stays subscribed. */
+    private void thenTimer(int token) {
+        for (Map.Entry<String, Map<String, SubOpts>> e : subOpts.entrySet()) {
+            for (Map.Entry<String, SubOpts> f : e.getValue().entrySet()) {
+                SubOpts so = f.getValue();
+                if (so.token != token) continue;
+                Link l = links.get(e.getKey());
+                if (l != null && !l.closed && "connected".equals(l.state) && l.subs.containsKey(f.getKey())) {
+                    thenWrite(l, f.getKey(), so, "every", false);
+                    port.timer("then", token, so.everyMs);
+                    return;
+                }
+                so.token = 0;
+                break;
+            }
+        }
+        stale("then timer " + token);
+    }
+
+    // ---- Android: the page's links across a process restart --------------------------------------
+
+    /**
+     * The links to keep for the next process (see {@link Port#linksSave}): every {@code auto} link and
+     * every link the page connected with {@code seconds} 0 (it waits until the device is in range), as
+     * iOS state restoration keeps the connections the system was holding or waiting for. A link
+     * connected with a timeout ends with the process, as the page's own call did.
+     */
+    public List<Object> savedLinks() {
+        List<Object> out = new ArrayList<>();
+        Set<String> seen = new java.util.HashSet<>();
+        for (Link l : links.values()) {
+            if (l.closed || !(l.auto || l.unbounded)) continue;
+            if (seen.add(l.id)) out.add(savedLink(l.id, l.auto, l.wanted));
+        }
+        for (Map.Entry<String, Closing> e : closing.entrySet()) {
+            if (e.getValue().reconnect && seen.add(e.getKey())) out.add(savedLink(e.getKey(), true, e.getValue().wanted));
+        }
+        for (Map.Entry<String, Set<String>> e : autoWhenOn.entrySet()) {
+            if (seen.add(e.getKey())) out.add(savedLink(e.getKey(), true, e.getValue()));
+        }
+        return out;
+    }
+
+    private Map<String, Object> savedLink(String id, boolean auto, Set<String> wanted) {
+        List<Object> options = new ArrayList<>();
+        Map<String, SubOpts> m = subOpts.get(id);
+        if (m != null) {
+            for (Map.Entry<String, SubOpts> e : m.entrySet()) {
+                SubOpts so = e.getValue();
+                if (!wanted.contains(e.getKey())) continue;
+                options.add(obj("key", e.getKey(), "mode", so.mode, "hex", so.data == null ? null : hex(so.data),
+                        "response", so.response, "every", so.everyMs / 1000, "target", so.target));
+            }
+        }
+        return obj("id", id, "auto", auto, "subscriptions", new ArrayList<Object>(wanted), "options", options);
+    }
+
+    private void saveLinks() {
+        if (!android) return;
+        List<Object> now = savedLinks();
+        String j = json(now);
+        if (j.equals(savedLinks)) return;
+        savedLinks = j;
+        port.linksSave(now);
+    }
+
+    /**
+     * Android, a new process: resumes the links the page asked to keep (saved by {@link Port#linksSave})
+     * as iOS state restoration does, each waiting for its device in the background with its
+     * subscriptions and subscribe options; then the {@code restored} event. Nothing else starts.
+     */
+    @SuppressWarnings("unchecked")
+    public void resume(List<Object> saved) {
+        List<Object> ids = new ArrayList<>();
+        for (Object o : saved) {
+            if (!(o instanceof Map)) continue;
+            Map<String, Object> m = (Map<String, Object>) o;
+            Object idv = m.get("id");
+            if (!(idv instanceof String) || !isId((String) idv, "android") || links.containsKey(idv)) continue;
+            String id = (String) idv;
+            boolean auto = Boolean.TRUE.equals(m.get("auto"));
+            Set<String> wanted = new LinkedHashSet<>();
+            if (m.get("subscriptions") instanceof List) {
+                for (Object k : (List<Object>) m.get("subscriptions")) if (k instanceof String) wanted.add((String) k);
+            }
+            if (m.get("options") instanceof List) {
+                Map<String, SubOpts> opts = new LinkedHashMap<>();
+                for (Object x : (List<Object>) m.get("options")) {
+                    if (!(x instanceof Map)) continue;
+                    Map<String, Object> e = (Map<String, Object>) x;
+                    if (!(e.get("key") instanceof String) || !wanted.contains(e.get("key"))) continue;
+                    SubOpts so = new SubOpts();
+                    so.mode = e.get("mode") instanceof Number ? ((Number) e.get("mode")).intValue() : 0;
+                    so.data = e.get("hex") instanceof String ? fromHex((String) e.get("hex")) : null;
+                    so.response = !Boolean.FALSE.equals(e.get("response"));
+                    so.everyMs = e.get("every") instanceof Number ? ((Number) e.get("every")).intValue() * 1000 : 0;
+                    so.target = e.get("target") instanceof String ? (String) e.get("target") : null;
+                    opts.put((String) e.get("key"), so);
+                }
+                if (!opts.isEmpty()) subOpts.put(id, opts);
+            }
+            if (on()) {
+                startLink(id, auto, -1, 0, true, wanted, !auto);
+                if (links.containsKey(id)) ids.add(id);
+            } else if (auto) {
+                // Off: an auto link waits for the adapter, as it would have in the old process. A link
+                // that was only connecting ends here, as it would have when the adapter went off.
+                autoWhenOn.put(id, wanted);
+                ids.add(id);
+            }
+        }
+        if (!ids.isEmpty()) record("restored", obj("peripherals", ids, "scanning", false));
+        saveLinks();
     }
 
     public void rssi(int call, String id) {
@@ -1490,6 +1773,10 @@ public final class BleCore {
             l.inFlight = null;
             if (o.internal) {
                 if ("sub".equals(o.kind)) l.failed++;
+                if (o.then != null) {
+                    int sp = err.indexOf(' ');
+                    thenRecord(l, o, "failed", sp < 0 ? err : err.substring(0, sp), sp < 0 ? "" : err.substring(sp + 1));
+                }
             } else {
                 refused(o.call, err);
             }
@@ -1532,10 +1819,15 @@ public final class BleCore {
 
     private void settle(Link l, Op o, String code, String message, Map<String, Object> data) {
         if (o.internal) {
+            if (o.then != null) {
+                thenRecord(l, o, code == null ? "written" : "failed", code, message);
+                return;
+            }
             if ("sub".equals(o.kind)) {
                 if (code == null) {
                     l.subs.put(o.key, data != null && data.get("mode") != null ? (String) data.get("mode") : "notify");
                     l.resubscribed++;
+                    afterSub(l, o.key, "resubscribed");
                 } else {
                     l.failed++;
                 }
@@ -1562,14 +1854,25 @@ public final class BleCore {
                 String mode = data != null && data.get("mode") != null ? (String) data.get("mode") : "notify";
                 l.subs.put(o.key, mode);
                 l.wanted.add(o.key);
+                Map<String, SubOpts> m = subOpts.get(l.id);
+                SubOpts old = m == null ? null : m.remove(o.key);
+                if (old != null) old.token = 0;
+                if (o.opts != null) subOpts.computeIfAbsent(l.id, x -> new LinkedHashMap<>()).put(o.key, o.opts);
                 ok(o.call, obj("subscribed", true, "mode", mode));
+                afterSub(l, o.key, "subscribed");
+                saveLinks();
                 break;
             }
-            case "unsub":
+            case "unsub": {
                 l.subs.remove(o.key);
                 l.wanted.remove(o.key);
+                Map<String, SubOpts> m = subOpts.get(l.id);
+                SubOpts old = m == null ? null : m.remove(o.key);
+                if (old != null) old.token = 0;
                 ok(o.call, obj("subscribed", false));
+                saveLinks();
                 break;
+            }
             case "mtu":
                 ok(o.call, mtuData(l, true));
                 break;
@@ -3311,6 +3614,7 @@ public final class BleCore {
 
     private void updateHold() {
         if (!android) return;
+        saveLinks();
         boolean want = keepAliveWanted && holdCount() > 0;
         if (want && !holdActive) {
             int g = ++holdGen;
@@ -3402,6 +3706,9 @@ public final class BleCore {
                     }
                 }
                 stale("op timer " + token);
+                return;
+            case "then":
+                thenTimer(token);
                 return;
             case "close":
                 for (Map.Entry<String, Closing> e : closing.entrySet()) {
